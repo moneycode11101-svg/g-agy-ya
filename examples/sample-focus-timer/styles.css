@@ -1,0 +1,77 @@
+.sft-root {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--fg);
+  overflow-y: auto;
+}
+
+.sft-card {
+  width: 100%;
+  max-width: 360px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.sft-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 140ms ease, background 140ms ease;
+}
+
+.sft-btn:hover {
+  opacity: 0.9;
+}
+
+.sft-btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #ffffff;
+}
+
+.sft-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg-soft);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.sft-badge:hover {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.sft-badge-running {
+  border-color: color-mix(in srgb, #9333ea 50%, var(--border));
+  background: color-mix(in srgb, #9333ea 12%, var(--surface));
+  color: #9333ea;
+}

@@ -12,7 +12,7 @@ const common = {
   platform: 'node',
   target: 'node22',
   format: 'cjs',
-  external: ['electron'],
+  external: ['electron', 'esbuild'],
   sourcemap: true,
 };
 

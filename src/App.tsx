@@ -1,190 +1,202 @@
-import React, { useEffect } from 'react';
-import { Columns2, Globe, PanelLeft, RotateCcw, Rows2, Terminal } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { PanelLeft, RotateCcw, ShieldAlert } from 'lucide-react';
 import { GlobalContextMenu } from './components/ContextMenu';
-import { SettingsModal } from './components/SettingsModal';
-import { Sidebar } from './components/Sidebar';
 import { SplitTree } from './components/SplitTree';
-import { useSettingsStore } from './store/settingsStore';
-import { useWorkspaceStore } from './store/workspaceStore';
+import {
+  bootstrapClientKernel,
+  getDeskKernelBridge,
+  SlotOutlet,
+  useCommandRegistry,
+  useIntrospectionStore,
+  useLayoutStore,
+  useSlotRegistry,
+  type BuiltinPluginPackage,
+} from './kernel/client';
+import { AGENT_CLIENT_PLUGINS } from './plugins/agent-group';
+import { SHELL_CLIENT_PLUGINS } from './plugins/shell-group';
+import { VISUAL_CLIENT_PLUGINS } from './plugins/visual-group';
+import { useContextMenuStore } from './store/contextMenuStore';
+
+const ALL_CLIENT_PLUGINS: readonly BuiltinPluginPackage[] = [
+  ...AGENT_CLIENT_PLUGINS,
+  ...SHELL_CLIENT_PLUGINS,
+  ...VISUAL_CLIENT_PLUGINS,
+];
+
+// Guard against React StrictMode double-mount so kernel boots cleanly exactly once per renderer lifetime
+let kernelBootPromise: Promise<{ dispose: () => Promise<void> }> | null = null;
+
+function ensureClientKernelBooted(): Promise<{ dispose: () => Promise<void> }> {
+  if (!kernelBootPromise) {
+    kernelBootPromise = bootstrapClientKernel({
+      builtins: ALL_CLIENT_PLUGINS,
+      hooks: {
+        showContextMenu: (x, y, items) => {
+          useContextMenuStore.getState().showMenu(x, y, items);
+        },
+        closeContextMenu: () => {
+          useContextMenuStore.getState().closeMenu();
+        },
+      },
+    });
+  }
+  return kernelBootPromise;
+}
 
 export const App: React.FC = () => {
-  const layout = useWorkspaceStore((s) => s.layout);
-  const groups = useWorkspaceStore((s) => s.groups);
-  const sidebarOpen = useWorkspaceStore((s) => s.sidebarOpen);
-  const focusedGroupId = useWorkspaceStore((s) => s.focusedGroupId);
-  const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar);
-  const splitGroup = useWorkspaceStore((s) => s.splitGroup);
-  const addTabToGroup = useWorkspaceStore((s) => s.addTabToGroup);
-  const closeTab = useWorkspaceStore((s) => s.closeTab);
-  const resetLayout = useWorkspaceStore((s) => s.resetLayout);
-  const refreshRecentSessions = useWorkspaceStore((s) => s.refreshRecentSessions);
-  const refreshAccountQuota = useWorkspaceStore((s) => s.refreshAccountQuota);
-  const setAccountQuota = useWorkspaceStore((s) => s.setAccountQuota);
-  const handleAgyEvent = useWorkspaceStore((s) => s.handleAgyEvent);
-  const openUrlInWebview = useWorkspaceStore((s) => s.openUrlInWebview);
-  const hydrateSettings = useSettingsStore((s) => s.hydrate);
-  const openSettings = useSettingsStore((s) => s.openSettings);
-  const settingsOpen = useSettingsStore((s) => s.modalOpen);
-  const defaultWebviewUrl = useSettingsStore((s) => s.settings.defaultWebviewUrl);
+  const bootPhase = useLayoutStore((s) => s.bootPhase);
+  const layout = useLayoutStore((s) => s.layout);
+  const groups = useLayoutStore((s) => s.groups);
+  const sidebarOpen = useLayoutStore((s) => s.sidebarOpen);
+  const focusedGroupId = useLayoutStore((s) => s.focusedGroupId);
+  const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
+  const resetLayout = useLayoutStore((s) => s.resetLayout);
+  const sidebarEntries = useSlotRegistry((s) => s.bySlot['sidebar.section']);
+  const [safeModeDismissed, setSafeModeDismissed] = useState(false);
 
   useEffect(() => {
-    void hydrateSettings();
-    void refreshRecentSessions();
-    void refreshAccountQuota(false);
-    if (!window.agyDesk) return;
-    const offAgy = window.agyDesk.onAgyEvent(handleAgyEvent);
-    const offWv = window.agyDesk.onWebviewNewTab(openUrlInWebview);
-    const offQuota = window.agyDesk.onQuotaUpdated(setAccountQuota);
+    void ensureClientKernelBooted();
+
+    const offSidebarCmd = useCommandRegistry.getState().register({
+      id: 'kernel:toggle-sidebar',
+      title: '사이드바 토글',
+      pluginId: 'kernel',
+      shortcut: 'Mod+B',
+      run: () => useLayoutStore.getState().toggleSidebar(),
+    });
+
+    const offCloseTabCmd = useCommandRegistry.getState().register({
+      id: 'kernel:close-active-tab',
+      title: '현재 탭 닫기',
+      pluginId: 'kernel',
+      shortcut: 'Mod+W',
+      run: () => {
+        const s = useLayoutStore.getState();
+        const grp = s.groups[s.focusedGroupId];
+        if (grp?.activeTabId) {
+          void s.closeTab(grp.id, grp.activeTabId);
+        }
+      },
+    });
+
     return () => {
-      offAgy();
-      offWv();
-      offQuota();
+      void offSidebarCmd();
+      void offCloseTabCmd();
     };
-  }, [handleAgyEvent, hydrateSettings, openUrlInWebview, refreshAccountQuota, refreshRecentSessions, setAccountQuota]);
+  }, []);
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
-      const key = e.key.toLowerCase();
+  const bridge = getDeskKernelBridge();
+  const isMac = bridge ? bridge.env.platform === 'darwin' : navigator.platform.toLowerCase().includes('mac');
+  const isSafeMode = Boolean(bridge?.env.safeMode);
 
-      if (key === ',') {
-        e.preventDefault();
-        openSettings();
-      } else if (key === 'b') {
-        e.preventDefault();
-        toggleSidebar();
-      } else if (key === 'd') {
-        e.preventDefault();
-        splitGroup(focusedGroupId, e.shiftKey ? 'v' : 'h', 'launcher');
-      } else if (key === 'n') {
-        e.preventDefault();
-        addTabToGroup(focusedGroupId, 'chat');
-      } else if (key === 't') {
-        e.preventDefault();
-        addTabToGroup(focusedGroupId, e.shiftKey ? 'terminal' : 'webview');
-      } else if (key === 'g' && e.shiftKey) {
-        e.preventDefault();
-        addTabToGroup(focusedGroupId, 'diff');
-      } else if (key === 'w') {
-        e.preventDefault();
-        const grp = useWorkspaceStore.getState().groups[focusedGroupId];
-        if (grp?.activeTabId) closeTab(grp.id, grp.activeTabId);
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [addTabToGroup, closeTab, focusedGroupId, openSettings, splitGroup, toggleSidebar]);
-
-  useEffect(() => {
-    if (settingsOpen && document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-  }, [settingsOpen]);
-
-  const isMac = window.agyDesk?.platform === 'darwin';
   const focusedGrp = groups[focusedGroupId];
   const focusedTab = focusedGrp?.tabs.find((t) => t.id === focusedGrp.activeTabId) || focusedGrp?.tabs[0];
-  const folderLabel =
-    focusedTab?.kind === 'chat' && focusedTab.projectLabel
-      ? focusedTab.projectLabel
-      : focusedTab && 'cwd' in focusedTab
-        ? focusedTab.cwd.split('/').pop() || 'Home'
+  const rawProjectLabel =
+    typeof focusedTab?.state?.projectLabel === 'string' && focusedTab.state.projectLabel
+      ? focusedTab.state.projectLabel
+      : typeof focusedTab?.state?.cwd === 'string' && focusedTab.state.cwd
+        ? focusedTab.state.cwd.split('/').filter(Boolean).pop() || 'Home'
         : 'Workspace';
-  const titleLabel = focusedTab?.title || '새 대화';
+  const titleLabel = focusedTab?.title || 'Workspace';
   const splitCount = Object.keys(groups).length;
+  const hasSidebarSections = (sidebarEntries?.length || 0) > 0;
+  const showSidebar = sidebarOpen && hasSidebarSections;
 
   return (
     <div
       className="h-screen w-screen flex flex-col overflow-hidden"
       style={{ background: 'var(--bg)', color: 'var(--fg)' }}
     >
-      <SettingsModal />
-      <GlobalContextMenu />
+      {/* Safe Mode 복구 배너 (외부 로컬 플러그인 로드 중단 시 커널이 자동 제공) */}
+      {isSafeMode && !safeModeDismissed && (
+        <div
+          className="h-8 shrink-0 px-3 border-b flex items-center justify-between gap-2 text-[12px]"
+          style={{
+            background: 'color-mix(in srgb, var(--warn) 14%, var(--card))',
+            borderColor: 'color-mix(in srgb, var(--warn) 40%, var(--border))',
+            color: 'var(--fg)',
+          }}
+        >
+          <span className="flex items-center gap-1.5 min-w-0 truncate">
+            <ShieldAlert size={13} style={{ color: 'var(--warn)' }} className="shrink-0" />
+            <span className="font-semibold">Safe Mode</span>
+            <span className="truncate" style={{ color: 'var(--muted)' }}>
+              외부 로컬 플러그인이 일시 중지되었습니다. Plugin Studio 또는 설정 파일에서 복구할 수 있습니다.
+            </span>
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => void useIntrospectionStore.getState().sendCommand({ type: 'plugin:open-config-file' })}
+              className="px-2 py-0.5 rounded border text-[11px] cursor-pointer hover:bg-[var(--surface)]"
+              style={{ borderColor: 'var(--border)', background: 'var(--card)' }}
+            >
+              설정 파일 열기
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void useIntrospectionStore.getState().sendCommand({ type: 'system:set-safe-mode', enabled: false });
+                setSafeModeDismissed(true);
+              }}
+              className="px-2 py-0.5 rounded border text-[11px] cursor-pointer hover:bg-[var(--surface)]"
+              style={{ borderColor: 'var(--border)', background: 'var(--card)' }}
+            >
+              안전 모드 해제
+            </button>
+          </div>
+        </div>
+      )}
 
-      {/* Antigravity 스타일 단일 미니멀 타이틀바 (44px) */}
+      {/* Zero-Feature 44px 단일 미니멀 타이틀바 (모든 기능 버튼은 `titlebar.actions` 슬롯에서 주입) */}
       <header
-        aria-hidden={settingsOpen || undefined}
         className="h-11 shrink-0 flex items-center select-none app-drag border-b"
         style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}
       >
-        {/* 좌측 사이드바 영역 폭과 맞춘 컨트롤 */}
         <div
           className={`h-full flex items-center justify-between px-3 shrink-0 transition-all ${
-            sidebarOpen ? 'w-[244px] border-r' : 'w-auto'
+            showSidebar ? 'w-[244px] border-r' : 'w-auto'
           }`}
           style={{
-            background: sidebarOpen ? 'var(--sidebar)' : 'var(--bg)',
+            background: showSidebar ? 'var(--sidebar)' : 'var(--bg)',
             borderColor: 'var(--border)',
             paddingLeft: isMac ? '78px' : '12px',
           }}
         >
           <div className="flex items-center gap-1 app-no-drag">
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              className="p-1.5 rounded-lg hover:bg-[var(--surface-active)] cursor-pointer transition-colors"
-              style={{ color: 'var(--muted)' }}
-              title="사이드바 토글 (⌘B)"
-            >
-              <PanelLeft size={15} />
-            </button>
+            {hasSidebarSections && (
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                className="p-1.5 rounded-lg hover:bg-[var(--surface-active)] cursor-pointer transition-colors"
+                style={{ color: 'var(--muted)' }}
+                title="사이드바 토글 (⌘B)"
+              >
+                <PanelLeft size={15} />
+              </button>
+            )}
+            <SlotOutlet slotId="titlebar.actions" zone="left" compactError />
           </div>
         </div>
 
-        {/* 중앙 브레드크럼 + 우측 미니멀 고스트 아이콘 */}
         <div className="flex-1 min-w-0 px-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-1.5 text-[13px] min-w-0">
             <span className="truncate" style={{ color: 'var(--muted)' }}>
-              {folderLabel}
+              {rawProjectLabel}
             </span>
             <span style={{ color: 'var(--border-strong)' }}>/</span>
             <span className="font-medium truncate" style={{ color: 'var(--fg)' }}>
               {titleLabel}
             </span>
+            <SlotOutlet slotId="titlebar.actions" zone="center" compactError />
           </div>
 
           <div className="flex items-center gap-0.5 app-no-drag shrink-0">
-            <button
-              type="button"
-              onClick={() => splitGroup(focusedGroupId, 'h', 'terminal')}
-              className="p-1.5 rounded-lg hover:bg-[var(--surface)] cursor-pointer transition-colors"
-              style={{ color: 'var(--muted)' }}
-              title="옆에 터미널 분할 열기 (⌘⇧T)"
-            >
-              <Terminal size={15} />
-            </button>
-            <button
-              type="button"
-              onClick={() => splitGroup(focusedGroupId, 'h', 'webview', defaultWebviewUrl || 'http://localhost:5173')}
-              className="p-1.5 rounded-lg hover:bg-[var(--surface)] cursor-pointer transition-colors"
-              style={{ color: 'var(--muted)' }}
-              title="옆에 웹뷰 분할 열기 (⌘T)"
-            >
-              <Globe size={15} />
-            </button>
-            <button
-              type="button"
-              onClick={() => splitGroup(focusedGroupId, 'h', 'launcher')}
-              className="p-1.5 rounded-lg hover:bg-[var(--surface)] cursor-pointer transition-colors"
-              style={{ color: 'var(--muted)' }}
-              title="오른쪽으로 분할 (⌘D) — 새 창 선택"
-            >
-              <Columns2 size={15} />
-            </button>
-            <button
-              type="button"
-              onClick={() => splitGroup(focusedGroupId, 'v', 'launcher')}
-              className="p-1.5 rounded-lg hover:bg-[var(--surface)] cursor-pointer transition-colors"
-              style={{ color: 'var(--muted)' }}
-              title="아래로 분할 (⌘⇧D) — 새 창 선택"
-            >
-              <Rows2 size={15} />
-            </button>
+            <SlotOutlet slotId="titlebar.actions" zone="right" compactError />
             {splitCount > 1 && (
               <button
                 type="button"
-                onClick={resetLayout}
+                onClick={() => void resetLayout()}
                 className="p-1.5 rounded-lg hover:bg-[var(--surface)] cursor-pointer transition-colors"
                 style={{ color: 'var(--muted)' }}
                 title="단일 화면으로 복귀"
@@ -196,13 +208,40 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* 바디 */}
-      <div aria-hidden={settingsOpen || undefined} className="flex-1 min-h-0 flex">
-        {sidebarOpen && <Sidebar />}
+      {/* 바디: 빈 사이드바 슬롯 컨테이너 + Data-Agnostic 분할 트리 */}
+      <div className="flex-1 min-h-0 flex">
+        {showSidebar && (
+          <aside
+            className="w-[244px] shrink-0 border-r flex flex-col select-none min-h-0"
+            style={{ background: 'var(--sidebar)', borderColor: 'var(--border)' }}
+            data-desk-slot="sidebar.section"
+          >
+            <div className="px-2.5 pt-2.5 pb-1.5 space-y-0.5 shrink-0">
+              <SlotOutlet slotId="sidebar.section" zone="top" />
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto scroll-thin px-2 pb-3 flex flex-col">
+              <SlotOutlet slotId="sidebar.section" zone="body" />
+            </div>
+            <div className="p-2 border-t shrink-0 space-y-0.5" style={{ borderColor: 'var(--border)' }}>
+              <SlotOutlet slotId="sidebar.section" zone="footer" />
+            </div>
+          </aside>
+        )}
+
         <main className="flex-1 min-w-0 min-h-0 flex">
-          <SplitTree node={layout} />
+          {bootPhase === 'hydrated' ? (
+            <SplitTree node={layout} />
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-[12px]" style={{ color: 'var(--muted)' }}>
+              워크스페이스 커널 준비 중...
+            </div>
+          )}
         </main>
       </div>
+
+      {/* 전역 오버레이 슬롯 (SettingsModal, CommandPalette, UI X-Ray, Toast HUD) */}
+      <SlotOutlet slotId="overlay.layer" />
+      <GlobalContextMenu />
     </div>
   );
 };

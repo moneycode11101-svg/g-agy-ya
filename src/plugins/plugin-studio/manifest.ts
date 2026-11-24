@@ -1,0 +1,100 @@
+import { BUILTIN_PLUGIN_IDS, type PluginManifest } from '../../kernel/shared/types';
+
+export const PLUGIN_STUDIO_MANIFEST: PluginManifest = {
+  id: BUILTIN_PLUGIN_IDS.PLUGIN_STUDIO,
+  name: '플러그인 스튜디오 · X-Ray',
+  version: '1.0.0',
+  apiVersion: '^1.0.0',
+  description:
+    '실시간 3단 아키텍처 보드(Core ↔ App Plugins ↔ Runtime Assets), 이벤트 트래픽 펄스, UI X-Ray 투시 오버레이 및 크리에이터 3분할 자가 개조 루프를 제공합니다.',
+  layer: 'visual-tool',
+  category: 'visual-tool',
+  icon: 'Blocks',
+  impactClass: 'instant',
+  defaultEnabled: true,
+  locked: false,
+  entry: {
+    host: 'builtin:plugin-studio:host',
+    client: 'builtin:plugin-studio:client',
+  },
+  requires: [],
+  optionalRequires: ['service:agent-adapter'],
+  provides: ['visual:plugin-studio', 'visual:ui-xray'],
+  capabilities: ['fs:read', 'kernel:admin'],
+  configSchema: [
+    {
+      key: 'showEventPulses',
+      label: '라이브 이벤트 트래픽 펄스 표시',
+      description: '플러그인 스튜디오 캔버스에서 이벤트 버스 연결선과 실시간 펄스 애니메이션을 표시합니다.',
+      group: '스튜디오 보드',
+      type: 'boolean',
+      widget: 'toggle',
+      defaultValue: true,
+      keywords: ['이벤트', '펄스', '트래픽', '애니메이션', 'svg', 'bus'],
+    },
+    {
+      key: 'showEmptyXraySlots',
+      label: 'X-Ray에서 빈 슬롯 영역도 표시',
+      description: '현재 플러그인이 마운트되지 않은 빈 슬롯 컨테이너도 점선으로 함께 표시합니다.',
+      group: 'UI X-Ray',
+      type: 'boolean',
+      widget: 'toggle',
+      defaultValue: false,
+      keywords: ['xray', '투시', '빈 슬롯', '오버레이', '슬롯'],
+    },
+    {
+      key: 'compactBreakpointPx',
+      label: '스튜디오 컴팩트 전환 폭 (px)',
+      description: '스튜디오 패인 너비가 이 값보다 좁으면 분할 친화형 컴팩트 스택 레이아웃으로 자동 전환합니다.',
+      group: '스튜디오 보드',
+      type: 'number',
+      widget: 'slider',
+      min: 620,
+      max: 1120,
+      step: 20,
+      defaultValue: 860,
+      keywords: ['컴팩트', '반응형', '분할', '너비', 'breakpoint'],
+    },
+    {
+      key: 'defaultBottomTraceOpen',
+      label: '하단 실시간 이벤트 로그 기본 펼침',
+      description: '플러그인 스튜디오를 열 때 하단 이벤트 버스 트레이스 콘솔을 펼쳐둔 상태로 시작합니다.',
+      group: '스튜디오 보드',
+      type: 'boolean',
+      widget: 'toggle',
+      defaultValue: true,
+      keywords: ['트레이스', '로그', '콘솔', '이벤트'],
+    },
+  ],
+  contributes: {
+    slots: ['pane.type', 'sidebar.section', 'titlebar.actions', 'overlay.layer', 'settings.section'],
+    paneTypes: [
+      {
+        type: 'plugin-studio',
+        label: '플러그인 스튜디오',
+        icon: 'Blocks',
+      },
+    ],
+    commands: [
+      {
+        id: 'plugin-studio:open',
+        title: '플러그인 스튜디오 열기',
+        defaultShortcut: 'Mod+Shift+P',
+      },
+      {
+        id: 'plugin-studio:toggle-xray',
+        title: 'UI X-Ray 오버레이 토글',
+        defaultShortcut: 'Mod+Shift+X',
+      },
+      {
+        id: 'plugin-studio:creator-mode',
+        title: '크리에이터 3분할 모드 토글',
+        defaultShortcut: 'Mod+Shift+K',
+      },
+      {
+        id: 'plugin-studio:mount-local',
+        title: '로컬 플러그인 폴더 마운트...',
+      },
+    ],
+  },
+};

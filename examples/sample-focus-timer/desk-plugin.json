@@ -1,0 +1,54 @@
+{
+  "id": "sample-focus-timer",
+  "name": "포커스 타이머 (로컬 샘플)",
+  "version": "0.1.0",
+  "apiVersion": "^1.0.0",
+  "description": "앱 재빌드 없이 로컬 마운트·실시간 핫리로드되는 포모도로 작업 타이머 패인 + 채팅 컴포저 라이브 배지 샘플 플러그인",
+  "layer": "app",
+  "category": "local-dev",
+  "icon": "Timer",
+  "impactClass": "instant",
+  "defaultEnabled": true,
+  "entry": {
+    "client": "./client.tsx",
+    "styles": "./styles.css"
+  },
+  "requires": [],
+  "provides": ["pane:focus-timer"],
+  "capabilities": [],
+  "configSchema": [
+    {
+      "key": "workMinutes",
+      "label": "집중 시간 (분)",
+      "description": "한 번의 집중 세션 길이를 분 단위로 설정합니다. 변경 즉시 타이머 기본값에 반영됩니다.",
+      "group": "타이머 설정",
+      "type": "number",
+      "widget": "slider",
+      "min": 5,
+      "max": 60,
+      "step": 5,
+      "defaultValue": 25,
+      "keywords": ["포모도로", "타이머", "집중", "분", "timer", "focus"]
+    },
+    {
+      "key": "label",
+      "label": "세션 라벨",
+      "description": "타이머 패인과 채팅 컴포저 배지에 함께 표시되는 작업 이름입니다.",
+      "group": "타이머 설정",
+      "type": "string",
+      "defaultValue": "깊은 집중",
+      "placeholder": "예: 깊은 집중, 코드 리뷰",
+      "keywords": ["라벨", "작업", "이름", "label", "focus"]
+    }
+  ],
+  "contributes": {
+    "slots": ["pane.type", "pane.widget", "settings.section"],
+    "paneTypes": [
+      {
+        "type": "focus-timer",
+        "label": "포커스 타이머",
+        "icon": "Timer"
+      }
+    ]
+  }
+}

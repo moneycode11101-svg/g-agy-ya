@@ -1,6 +1,5 @@
 import React, { useRef, useState } from 'react';
-import type { LayoutNode } from '../shared/types';
-import { useWorkspaceStore } from '../store/workspaceStore';
+import { useLayoutStore, type LayoutNode } from '../kernel/client';
 import { PaneGroupView } from './PaneGroupView';
 
 interface SplitTreeProps {
@@ -8,9 +7,10 @@ interface SplitTreeProps {
 }
 
 export const SplitTree: React.FC<SplitTreeProps> = ({ node }) => {
-  const groups = useWorkspaceStore((s) => s.groups);
-  const focusedGroupId = useWorkspaceStore((s) => s.focusedGroupId);
-  const setSplitRatio = useWorkspaceStore((s) => s.setSplitRatio);
+  const groups = useLayoutStore((s) => s.groups);
+  const focusedGroupId = useLayoutStore((s) => s.focusedGroupId);
+  const setSplitRatio = useLayoutStore((s) => s.setSplitRatio);
+  const setDraggingOverlay = useLayoutStore((s) => s.setDraggingOverlay);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -25,12 +25,8 @@ export const SplitTree: React.FC<SplitTreeProps> = ({ node }) => {
     const el = wrapRef.current;
     if (!el) return;
     setDragging(true);
-
-    // Disable pointer events on all <webview> elements while dragging so Chromium never swallows mousemove
-    const webviews = Array.from(document.querySelectorAll('webview')) as HTMLElement[];
-    webviews.forEach((w) => {
-      w.style.pointerEvents = 'none';
-    });
+    // Activate zero-coupling CSS pointer shield (`[data-desk-dragging="true"] webview, iframe`)
+    setDraggingOverlay(true);
 
     const rect = el.getBoundingClientRect();
     const onMove = (ev: MouseEvent) => {
@@ -42,15 +38,15 @@ export const SplitTree: React.FC<SplitTreeProps> = ({ node }) => {
     };
     const onUp = () => {
       setDragging(false);
-      webviews.forEach((w) => {
-        w.style.pointerEvents = '';
-      });
+      setDraggingOverlay(false);
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('blur', onUp);
     };
 
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+    window.addEventListener('blur', onUp);
   };
 
   return (

@@ -66,6 +66,14 @@ body,
   -webkit-app-region: no-drag;
 }
 
+/* Zero-coupling CSS pointer shield during split/tab drag or UI X-Ray overlay */
+[data-desk-dragging="true"] webview,
+[data-desk-dragging="true"] iframe,
+[data-desk-xray="true"] webview,
+[data-desk-xray="true"] iframe {
+  pointer-events: none !important;
+}
+
 .num {
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
