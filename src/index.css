@@ -1,0 +1,239 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #ffffff;
+  --sidebar: #f7f8fa;
+  --surface: #f3f4f6;
+  --surface-active: #eaedf2;
+  --card: #ffffff;
+  --border: #eceef2;
+  --border-strong: #dde1e8;
+  --fg: #181a1f;
+  --fg-soft: #374151;
+  --muted: #848c99;
+  --placeholder: #9ca3af;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --ok: #16a34a;
+  --warn: #b45309;
+  --danger: #b91c1c;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-composer: 0 2px 12px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-popover: 0 8px 28px rgba(15, 23, 42, 0.10), 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111317;
+    --sidebar: #16181d;
+    --surface: #1d2027;
+    --surface-active: #252932;
+    --card: #181b21;
+    --border: #252932;
+    --border-strong: #323846;
+    --fg: #eef1f6;
+    --fg-soft: #cbd5e1;
+    --muted: #848d9d;
+    --placeholder: #5f6878;
+    --accent: #4c8dff;
+    --accent-hover: #3b82f6;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --danger: #f87171;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+    --shadow-composer: 0 4px 18px rgba(0, 0, 0, 0.32);
+    --shadow-popover: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Inter", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.scroll-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 999px;
+}
+
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg) 22%, transparent);
+}
+
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Whisper-clean track bar matching reference HUD */
+.track {
+  position: relative;
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
+.track-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 58%, transparent);
+  transition: width 180ms ease;
+}
+
+.track-tick {
+  position: absolute;
+  top: -3px;
+  width: 1.5px;
+  height: 11px;
+  background: color-mix(in srgb, var(--fg) 35%, transparent);
+  border-radius: 1px;
+}
+
+/* Hairline split drag handles */
+.split-handle-h {
+  width: 5px;
+  cursor: col-resize;
+  position: relative;
+  flex-shrink: 0;
+  background: transparent;
+}
+.split-handle-h::after {
+  content: '';
+  position: absolute;
+  inset: 0 2px;
+  background: var(--border);
+  transition: background 140ms;
+}
+.split-handle-h:hover::after,
+.split-handle-h.dragging::after {
+  background: var(--accent);
+}
+
+.split-handle-v {
+  height: 5px;
+  cursor: row-resize;
+  position: relative;
+  flex-shrink: 0;
+  background: transparent;
+}
+.split-handle-v::after {
+  content: '';
+  position: absolute;
+  inset: 2px 0;
+  background: var(--border);
+  transition: background 140ms;
+}
+.split-handle-v:hover::after,
+.split-handle-v.dragging::after {
+  background: var(--accent);
+}
+
+/* Editorial Antigravity-grade markdown prose */
+.md-prose {
+  color: var(--fg);
+  font-size: var(--chat-font-size, 14.5px);
+  line-height: 1.72;
+}
+.md-prose p {
+  margin: 0.5em 0;
+}
+.md-prose p:first-child {
+  margin-top: 0;
+}
+.md-prose p:last-child {
+  margin-bottom: 0;
+}
+.md-prose pre {
+  margin: 0.7em 0;
+  padding: 0.85em 1em;
+  border-radius: 10px;
+  background: var(--sidebar);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.md-prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88em;
+}
+.md-prose :not(pre) > code {
+  padding: 0.14em 0.42em;
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--fg);
+}
+.md-prose ul,
+.md-prose ol {
+  margin: 0.5em 0;
+  padding-left: 1.45em;
+}
+.md-prose ul {
+  list-style: disc;
+}
+.md-prose ol {
+  list-style: decimal;
+}
+.md-prose li {
+  margin: 0.25em 0;
+}
+.md-prose h1,
+.md-prose h2,
+.md-prose h3 {
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  margin: 1em 0 0.4em;
+}
+.md-prose h1 { font-size: 1.25em; }
+.md-prose h2 { font-size: 1.12em; }
+.md-prose h3 { font-size: 1.03em; }
+.md-prose strong {
+  font-weight: 650;
+}
+.md-prose a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.md-prose a:hover {
+  text-decoration: underline;
+}
+.md-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.7em 0;
+  font-size: 13px;
+}
+.md-prose th,
+.md-prose td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.45em 0.6em;
+  text-align: left;
+}
+.md-prose th {
+  color: var(--muted);
+  font-weight: 600;
+}
