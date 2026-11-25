@@ -5,7 +5,6 @@ import {
   Blocks,
   ChevronDown,
   ChevronUp,
-  Columns3,
   Cpu,
   ExternalLink,
   FileCode2,
@@ -131,8 +130,6 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
   const selectedNodeId = usePluginStudioUiStore((s) => s.selectedNodeId);
   const selectNode = usePluginStudioUiStore((s) => s.selectNode);
   const pingPluginInUi = usePluginStudioUiStore((s) => s.pingPluginInUi);
-  const creatorModeActive = usePluginStudioUiStore((s) => s.creatorModeActive);
-  const toggleCreatorMode = usePluginStudioUiStore((s) => s.toggleCreatorMode);
 
   const groups = useLayoutStore((s) => s.groups);
   const paneTypes = useSlotRegistry((s) => s.paneTypes);
@@ -513,21 +510,6 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
           >
             <FolderPlus size={13} />
             <span>+ 로컬 플러그인 마운트</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => toggleCreatorMode()}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[12px] font-medium cursor-pointer transition-colors hover:bg-[var(--surface-active)]"
-            style={{
-              background: creatorModeActive ? 'color-mix(in srgb, #9333ea 14%, var(--card))' : 'var(--card)',
-              borderColor: creatorModeActive ? '#9333ea' : 'var(--border)',
-              color: creatorModeActive ? '#9333ea' : 'var(--fg-soft)',
-            }}
-            title="1클릭 크리에이터 3분할: [좌: 채팅] + [우상: 스튜디오] + [우하: 미리보기] (⌘⇧K)"
-          >
-            <Columns3 size={13} />
-            <span>{creatorModeActive ? '3분할 복귀' : '크리에이터 3분할'}</span>
           </button>
 
           <button

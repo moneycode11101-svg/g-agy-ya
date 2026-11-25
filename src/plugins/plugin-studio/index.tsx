@@ -251,15 +251,6 @@ const pluginStudioClient: ClientPluginModule = {
     });
 
     ctx.commands.register({
-      id: 'plugin-studio:creator-mode',
-      title: '크리에이터 3분할 모드 토글',
-      shortcut: 'Mod+Shift+K',
-      run: () => {
-        usePluginStudioUiStore.getState().toggleCreatorMode();
-      },
-    });
-
-    ctx.commands.register({
       id: 'plugin-studio:mount-local',
       title: '로컬 플러그인 폴더 마운트...',
       run: async () => {

@@ -24,13 +24,11 @@ interface PluginStudioUiState {
   inspectorTab: InspectorTabId;
   pingedPluginId: string | null;
   pingedSlotId: SlotKind | null;
-  creatorModeActive: boolean;
 
   selectNode: (nodeId: string | null, tab?: InspectorTabId) => void;
   setInspectorTab: (tab: InspectorTabId) => void;
   pingPluginInUi: (pluginId: string | null, slotId?: SlotKind | null) => void;
   openStudioAndInspect: (pluginId?: string, tab?: InspectorTabId, opts?: { splitIfMissing?: boolean }) => void;
-  toggleCreatorMode: (previewPaneType?: string) => void;
   askAgentAboutPlugin: (info: AskAgentPluginPayload) => void;
 }
 
@@ -62,12 +60,11 @@ function buildAskAgentPrompt(info: AskAgentPluginPayload): string {
   return lines.join('\n');
 }
 
-export const usePluginStudioUiStore = create<PluginStudioUiState>((set, get) => ({
+export const usePluginStudioUiStore = create<PluginStudioUiState>((set) => ({
   selectedNodeId: null,
   inspectorTab: 'overview',
   pingedPluginId: null,
   pingedSlotId: null,
-  creatorModeActive: false,
 
   selectNode: (nodeId, tab) =>
     set((s) => ({
@@ -111,69 +108,6 @@ export const usePluginStudioUiStore = create<PluginStudioUiState>((set, get) => 
     } else {
       layout.openTab('plugin-studio');
     }
-  },
-
-  toggleCreatorMode: (previewPaneType) => {
-    const layout = useLayoutStore.getState();
-    const { creatorModeActive } = get();
-
-    if (creatorModeActive && layout.savedLayoutSnapshot) {
-      layout.restoreLayoutSnapshot();
-      set({ creatorModeActive: false });
-      useIntrospectionStore.getState().pushToast('이전 워크스페이스 레이아웃으로 복귀했습니다.', 'info');
-      return;
-    }
-
-    // Snapshot current workspace so user can exit Creator Mode losslessly in 1 click
-    layout.saveLayoutSnapshot();
-
-    const paneTypes = useSlotRegistry.getState().paneTypes;
-    const snap = useIntrospectionStore.getState().snapshot;
-
-    // Pick best preview pane for bottom-right: explicit -> any active local-dev pane -> launcher -> core:empty
-    let resolvedPreviewType = previewPaneType;
-    if (!resolvedPreviewType && snap) {
-      const localPluginIds = new Set(
-        Object.values(snap.plugins)
-          .filter((p) => p.origin === 'local-dev' && p.lifecycleState === 'active')
-          .map((p) => p.id)
-      );
-      const localPane = Object.values(paneTypes).find(
-        (def) => def.ownerPluginId && localPluginIds.has(def.ownerPluginId)
-      );
-      if (localPane) resolvedPreviewType = localPane.type;
-    }
-    if (!resolvedPreviewType) {
-      resolvedPreviewType = paneTypes['launcher'] ? 'launcher' : 'core:empty';
-    }
-
-    const leftType = paneTypes['chat'] ? 'chat' : paneTypes['launcher'] ? 'launcher' : 'core:empty';
-
-    // Reuse existing left chat tab if present in focused group, else open one
-    const initialGroups = Object.values(layout.groups);
-    let leftGroupId = layout.focusedGroupId;
-    const existingChat = findExistingTabByPaneType('chat');
-    if (existingChat) {
-      leftGroupId = existingChat.groupId;
-      layout.setActiveTab(existingChat.groupId, existingChat.tabId);
-    } else if (initialGroups.length > 0) {
-      leftGroupId = initialGroups[0].id;
-      layout.addTabToGroup(leftGroupId, leftType);
-    }
-
-    // Split right -> top-right: Plugin Studio
-    layout.splitGroup(leftGroupId, 'h', 'plugin-studio', undefined, 'after');
-    const rightTopGroupId = useLayoutStore.getState().focusedGroupId;
-
-    // Split bottom of right-top -> bottom-right: Local plugin live preview or launcher
-    useLayoutStore.getState().splitGroup(rightTopGroupId, 'v', resolvedPreviewType, undefined, 'after');
-
-    // Focus back to left chat for immediate prompting
-    useLayoutStore.getState().setFocusedGroup(leftGroupId);
-    set({ creatorModeActive: true });
-    useIntrospectionStore
-      .getState()
-      .pushToast('크리에이터 3분할 활성화: [좌: 채팅] + [우상: 스튜디오] + [우하: 미리보기]', 'info');
   },
 
   askAgentAboutPlugin: (info) => {

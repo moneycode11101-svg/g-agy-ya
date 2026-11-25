@@ -6,7 +6,7 @@ export const PLUGIN_STUDIO_MANIFEST: PluginManifest = {
   version: '1.0.0',
   apiVersion: '^1.0.0',
   description:
-    '실시간 3단 아키텍처 보드(Core ↔ App Plugins ↔ Runtime Assets), 이벤트 트래픽 펄스, UI X-Ray 투시 오버레이 및 크리에이터 3분할 자가 개조 루프를 제공합니다.',
+    '실시간 3단 아키텍처 보드(Core ↔ App Plugins ↔ Runtime Assets), 이벤트 트래픽 펄스 및 UI X-Ray 투시 오버레이를 제공합니다.',
   layer: 'visual-tool',
   category: 'visual-tool',
   icon: 'Blocks',
@@ -85,11 +85,6 @@ export const PLUGIN_STUDIO_MANIFEST: PluginManifest = {
         id: 'plugin-studio:toggle-xray',
         title: 'UI X-Ray 오버레이 토글',
         defaultShortcut: 'Mod+Shift+X',
-      },
-      {
-        id: 'plugin-studio:creator-mode',
-        title: '크리에이터 3분할 모드 토글',
-        defaultShortcut: 'Mod+Shift+K',
       },
       {
         id: 'plugin-studio:mount-local',
