@@ -94,6 +94,8 @@ export interface ChatSessionStoreState {
     delivery?: 'queue' | 'immediate'
   ) => Promise<void>;
   removeQueuedPrompt: (tabSessionId: string, queueId: string) => void;
+  updateQueuedPrompt: (tabSessionId: string, queueId: string, nextPrompt: string) => void;
+  sendQueuedNow: (groupId: string, tabId: string, state: ChatTabState, queueId: string) => Promise<void>;
   clearQueuedPrompts: (tabSessionId: string) => void;
   cancelTurn: (tabSessionId: string) => Promise<void>;
   submitAuthCode: (tabSessionId: string, code: string) => Promise<void>;
@@ -287,6 +289,31 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
         },
       };
     });
+  },
+
+  updateQueuedPrompt: (tabSessionId, queueId, nextPrompt) => {
+    const trimmed = nextPrompt.trim();
+    if (!trimmed) {
+      get().removeQueuedPrompt(tabSessionId, queueId);
+      return;
+    }
+    set((prev) => {
+      const cur = prev.queuedPromptsBySession[tabSessionId] || [];
+      return {
+        queuedPromptsBySession: {
+          ...prev.queuedPromptsBySession,
+          [tabSessionId]: cur.map((q) => (q.id === queueId ? { ...q, prompt: trimmed } : q)),
+        },
+      };
+    });
+  },
+
+  sendQueuedNow: async (groupId, tabId, state, queueId) => {
+    const sid = state.sessionId;
+    const item = (get().queuedPromptsBySession[sid] || []).find((q) => q.id === queueId);
+    if (!item) return;
+    get().removeQueuedPrompt(sid, queueId);
+    await get().sendPrompt(groupId, tabId, state, item.prompt, item.images, 'immediate');
   },
 
   clearQueuedPrompts: (tabSessionId) => {

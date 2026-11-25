@@ -10,10 +10,96 @@ import { RUNTIME_CONTEXT_INSPECTOR_MANIFEST } from '../../src/plugins/runtime-co
 import { SIDEBAR_WORKSPACE_MANIFEST } from '../../src/plugins/sidebar-workspace/manifest';
 import { agentAgyHostPlugin } from './agent-agy/host';
 
-/** Minimal host half for `pane-chat` (directory/file picker, clipboard image paste & external links) */
+const MENTION_SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  'dist',
+  'dist-electron',
+  '.next',
+  'target',
+  '__pycache__',
+  '.cache',
+  '.Trash',
+  'Library',
+  'Applications',
+  '.venv',
+  'venv',
+]);
+
+interface MentionFileEntry {
+  name: string;
+  relPath: string;
+  fullPath: string;
+  isDir: boolean;
+}
+
+function listWorkspaceFilesForMention(cwd: string, query = '', limit = 30): MentionFileEntry[] {
+  const root = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
+  const isHomeRoot = path.resolve(root) === path.resolve(os.homedir());
+  const maxDepth = isHomeRoot ? 2 : 4;
+  const maxScan = 500;
+  const q = query.trim().toLowerCase();
+
+  const collected: MentionFileEntry[] = [];
+  const queue: Array<{ dir: string; rel: string; depth: number }> = [{ dir: root, rel: '', depth: 0 }];
+
+  while (queue.length > 0 && collected.length < maxScan) {
+    const cur = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(cur.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      if (collected.length >= maxScan) break;
+      const name = ent.name;
+      if (name.startsWith('.') && name !== '.env' && name !== '.gitignore') continue;
+      if (ent.isDirectory() && MENTION_SKIP_DIRS.has(name)) continue;
+
+      const relPath = cur.rel ? `${cur.rel}/${name}` : name;
+      const fullPath = path.join(cur.dir, name);
+      const isDir = ent.isDirectory();
+
+      collected.push({ name, relPath, fullPath, isDir });
+      if (isDir && cur.depth + 1 < maxDepth) {
+        queue.push({ dir: fullPath, rel: relPath, depth: cur.depth + 1 });
+      }
+    }
+  }
+
+  const filtered = q
+    ? collected.filter(
+        (item) => item.name.toLowerCase().includes(q) || item.relPath.toLowerCase().includes(q)
+      )
+    : collected;
+
+  filtered.sort((a, b) => {
+    if (q) {
+      const aStart = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+      const bStart = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+      if (aStart !== bStart) return aStart - bStart;
+    }
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    return a.relPath.length - b.relPath.length || a.relPath.localeCompare(b.relPath);
+  });
+
+  return filtered.slice(0, limit);
+}
+
+/** Minimal host half for `pane-chat` (directory/file picker, @ mention file search, clipboard image paste & external links) */
 const paneChatHostPlugin: HostPluginModule = {
   activate(ctx: DeskHostContext) {
     ctx.rpc.handle<void, string | null>('pane-chat:pickDirectory', () => ctx.host.pickDirectory());
+    ctx.rpc.handle<{ cwd?: string; query?: string; limit?: number } | undefined, MentionFileEntry[]>(
+      'pane-chat:listFiles',
+      (payload) =>
+        listWorkspaceFilesForMention(
+          payload?.cwd || os.homedir(),
+          payload?.query || '',
+          payload?.limit ?? 24
+        )
+    );
     ctx.rpc.handle<void, string[]>('pane-chat:pickFiles', async () => {
       const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
       const res = win

@@ -2,26 +2,31 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
+  AtSign,
   BarChart3,
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Columns2,
   Copy,
+  FileText,
+  Folder,
   FolderOpen,
   FolderPlus,
   Globe,
-  ImagePlus,
   KeyRound,
   MessageSquare,
   Minimize2,
   Paperclip,
+  Pencil,
   Plus,
   RefreshCw,
   Rows2,
   Shield,
   ShieldAlert,
   Sparkles,
+  SquareSlash,
   Terminal,
   Trash2,
 } from 'lucide-react';
@@ -40,7 +45,7 @@ import {
 import type { ChatMessage, ChatMode, SessionMetrics } from '../../shared/types';
 import { fmtKo } from '../../utils/formatKo';
 import { AGY_RPC, type AgyLoadedSession } from '../agent-agy/types';
-import { AssistantTurnView, QueuedUserBubble, UserMessageBubble } from './AssistantTurnView';
+import { AssistantTurnView, UserMessageBubble } from './AssistantTurnView';
 import { useChatSessionStore, type ChatTabState, type QueuedPromptItem } from './chatStore';
 import type { PaneChatConfig } from './manifest';
 import {
@@ -49,6 +54,13 @@ import {
   groupModelsIntoFamilies,
   type SlashCommandItem,
 } from './modelCatalog';
+
+interface MentionFileEntry {
+  name: string;
+  relPath: string;
+  fullPath: string;
+  isDir: boolean;
+}
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_QUEUE: QueuedPromptItem[] = [];
@@ -102,7 +114,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const refreshModels = useChatSessionStore((s) => s.refreshModels);
   const sendPrompt = useChatSessionStore((s) => s.sendPrompt);
   const removeQueuedPrompt = useChatSessionStore((s) => s.removeQueuedPrompt);
-  const clearQueuedPrompts = useChatSessionStore((s) => s.clearQueuedPrompts);
+  const updateQueuedPrompt = useChatSessionStore((s) => s.updateQueuedPrompt);
+  const sendQueuedNow = useChatSessionStore((s) => s.sendQueuedNow);
   const cancelTurn = useChatSessionStore((s) => s.cancelTurn);
   const submitAuthCode = useChatSessionStore((s) => s.submitAuthCode);
   const respondPermission = useChatSessionStore((s) => s.respondPermission);
@@ -129,6 +142,12 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionItems, setMentionItems] = useState<MentionFileEntry[]>([]);
+  const [queueCardCollapsed, setQueueCardCollapsed] = useState(false);
+  const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
+  const [editingQueueText, setEditingQueueText] = useState('');
   const [pendingSwitch, setPendingSwitch] = useState<{ patch: Partial<ChatTabState>; label: string } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -191,6 +210,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   useEffect(() => {
     setSlashDismissed(false);
     setSlashIndex(0);
+    setMentionDismissed(false);
+    setMentionIndex(0);
   }, [input]);
 
   useEffect(() => {
@@ -301,6 +322,81 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   }, [allSlashItems, slashMatch]);
 
   const slashMenuOpen = slashMatch !== null && filteredSlashItems.length > 0;
+
+  // `@` workspace file/folder mention detection & live listing
+  const mentionMatch = useMemo(() => {
+    if (mentionDismissed || slashMenuOpen) return null;
+    const m = input.match(/(?:^|\s)@([^\s\n]*)$/);
+    return m ? m[1] : null;
+  }, [input, mentionDismissed, slashMenuOpen]);
+
+  useEffect(() => {
+    if (mentionMatch === null) {
+      setMentionItems([]);
+      return;
+    }
+    let cancelled = false;
+    void ctx.rpc
+      .invoke<MentionFileEntry[]>('pane-chat:listFiles', {
+        cwd: state.cwd,
+        query: mentionMatch,
+        limit: 16,
+      })
+      .then((res) => {
+        if (!cancelled && Array.isArray(res)) {
+          setMentionItems(res);
+          setMentionIndex(0);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setMentionItems([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ctx.rpc, mentionMatch, state.cwd]);
+
+  const mentionMenuOpen = mentionMatch !== null && mentionItems.length > 0;
+
+  const selectMentionItem = (entry: MentionFileEntry) => {
+    const nextInput = input.replace(/@([^\s\n]*)$/, `@${entry.relPath} `);
+    setInput(nextInput);
+    setMentionDismissed(true);
+    if (!entry.isDir) {
+      setAttachedImages((prev) => Array.from(new Set([...prev, entry.fullPath])));
+    } else if (entry.fullPath !== state.cwd) {
+      const nextDirs = Array.from(new Set([...(state.addDirs || []), entry.fullPath]));
+      updateState({ addDirs: nextDirs });
+    }
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const triggerMentionFromMenu = () => {
+    setPlusMenuOpen(false);
+    setMentionDismissed(false);
+    setInput((prev) => {
+      if (/(?:^|\s)@$/.test(prev)) return prev;
+      return prev && !/\s$/.test(prev) ? `${prev} @` : `${prev}@`;
+    });
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const triggerSlashFromMenu = () => {
+    setPlusMenuOpen(false);
+    setSlashDismissed(false);
+    setInput((prev) => (prev.startsWith('/') ? prev : '/'));
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const triggerBrowserFromMenu = () => {
+    setPlusMenuOpen(false);
+    if (registeredPaneTypes['webview']) {
+      splitGroup(groupId, 'h', 'webview');
+    } else {
+      setInput('/browser ');
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }
+  };
 
   const selectSlashItem = (item: SlashCommandItem) => {
     setInput(`${item.command} `);
@@ -638,27 +734,17 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               </div>
             </div>
           ) : (
-            <>
-              {messages.map((m) =>
-                m.role === 'user' ? (
-                  <UserMessageBubble key={m.id} message={m} />
-                ) : (
-                  <AssistantTurnView
-                    key={m.id}
-                    message={m}
-                    transcriptView={cfg.transcriptView || 'normal'}
-                  />
-                )
-              )}
-              {queuedPrompts.map((q) => (
-                <QueuedUserBubble
-                  key={q.id}
-                  prompt={q.prompt}
-                  images={q.images}
-                  onCancel={() => removeQueuedPrompt(sessionId, q.id)}
+            messages.map((m) =>
+              m.role === 'user' ? (
+                <UserMessageBubble key={m.id} message={m} />
+              ) : (
+                <AssistantTurnView
+                  key={m.id}
+                  message={m}
+                  transcriptView={cfg.transcriptView || 'normal'}
                 />
-              ))}
-            </>
+              )
+            )
           )}
 
           {errorText && (
@@ -676,28 +762,9 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
         </div>
       </div>
 
-      {/* 하단 플로팅 영역: 배너 + 동적 위젯 슬롯(chat:above-composer) + 컴포저 + 동적 풋터 슬롯 */}
+      {/* 하단 플로팅 영역: 배너 + 동적 위젯 슬롯(chat:above-composer) + 대기 중인 메시지 카드 + 컴포저 */}
       <div className="shrink-0 w-full">
         <div className={`${colMaxWidthClass} mx-auto w-full px-5 pb-4 pt-1 space-y-2.5`}>
-          {queuedPrompts.length > 1 && (
-            <div
-              className="rounded-xl border px-3.5 py-1.5 flex items-center justify-between gap-2 text-xs"
-              style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
-            >
-              <span className="truncate" style={{ color: 'var(--muted)' }}>
-                대기 중인 메시지 <strong style={{ color: 'var(--fg-soft)' }}>{queuedPrompts.length}건</strong> · 현재 응답 완료 후 순서대로 전송됩니다
-              </span>
-              <button
-                type="button"
-                onClick={() => clearQueuedPrompts(sessionId)}
-                className="text-[11px] px-2 py-0.5 rounded hover:bg-[var(--card)] cursor-pointer shrink-0"
-                style={{ color: 'var(--muted)' }}
-              >
-                모두 취소
-              </button>
-            </div>
-          )}
-
           {pendingSwitch && (
             <div
               className="rounded-xl border px-3.5 py-2 flex items-center justify-between gap-2 text-xs"
@@ -882,6 +949,125 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
             tab={tab}
           />
 
+          {/* 순정 Antigravity 스타일 `대기 중인 메시지` 카드 */}
+          {queuedPrompts.length > 0 && (
+            <div
+              className="rounded-[20px] border px-4 py-3 transition-all"
+              style={{
+                background: 'var(--card)',
+                borderColor: 'var(--border-strong)',
+                boxShadow: 'var(--shadow-sm)',
+              }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[13px] font-semibold shrink-0" style={{ color: 'var(--fg)' }}>
+                    대기 중인 메시지
+                  </span>
+                  <span
+                    className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold tabular-nums shrink-0"
+                    style={{ background: 'var(--surface)', color: 'var(--fg-soft)' }}
+                  >
+                    {queuedPrompts.length}
+                  </span>
+                  <span className="text-[12px] truncate" style={{ color: 'var(--muted)' }}>
+                    에이전트 작업이 끝난 후 전송됨
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setQueueCardCollapsed((v) => !v)}
+                  className="p-1 rounded-lg hover:bg-[var(--surface)] cursor-pointer shrink-0"
+                  style={{ color: 'var(--muted)' }}
+                  title={queueCardCollapsed ? '대기 메시지 펼치기' : '대기 메시지 접기'}
+                  aria-label="대기 중인 메시지 접기/펼치기"
+                >
+                  {queueCardCollapsed ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                </button>
+              </div>
+
+              {!queueCardCollapsed && (
+                <div className="mt-2.5 space-y-1.5">
+                  {queuedPrompts.map((q) => (
+                    <div
+                      key={q.id}
+                      className="flex items-center justify-between gap-2 py-1 rounded-xl"
+                    >
+                      {editingQueueId === q.id ? (
+                        <input
+                          type="text"
+                          autoFocus
+                          value={editingQueueText}
+                          onChange={(e) => setEditingQueueText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                              e.preventDefault();
+                              updateQueuedPrompt(sessionId, q.id, editingQueueText);
+                              setEditingQueueId(null);
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault();
+                              setEditingQueueId(null);
+                            }
+                          }}
+                          onBlur={() => {
+                            updateQueuedPrompt(sessionId, q.id, editingQueueText);
+                            setEditingQueueId(null);
+                          }}
+                          className="flex-1 min-w-0 px-2.5 py-1 rounded-lg border text-[13px] outline-none"
+                          style={{
+                            background: 'var(--bg)',
+                            borderColor: 'var(--accent)',
+                            color: 'var(--fg)',
+                          }}
+                        />
+                      ) : (
+                        <div className="min-w-0 flex-1 text-[13.5px] truncate" style={{ color: 'var(--fg)' }}>
+                          {q.prompt}
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => void sendQueuedNow(groupId, tab.id, state, q.id)}
+                          className="p-1.5 rounded-lg hover:bg-[var(--surface)] cursor-pointer transition-colors"
+                          style={{ color: 'var(--muted)' }}
+                          title="지금 바로 전송"
+                          aria-label="지금 바로 전송"
+                        >
+                          <ArrowRight size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingQueueId(q.id);
+                            setEditingQueueText(q.prompt);
+                          }}
+                          className="p-1.5 rounded-lg hover:bg-[var(--surface)] cursor-pointer transition-colors"
+                          style={{ color: 'var(--muted)' }}
+                          title="대기 메시지 편집"
+                          aria-label="대기 메시지 편집"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeQueuedPrompt(sessionId, q.id)}
+                          className="p-1.5 rounded-lg hover:bg-[var(--surface)] cursor-pointer transition-colors"
+                          style={{ color: 'var(--muted)' }}
+                          title="대기 메시지 삭제"
+                          aria-label="대기 메시지 삭제"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* 플로팅 컴포저 카드 */}
           <form
             onSubmit={(e) => void handleSubmit(e)}
@@ -892,6 +1078,58 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               boxShadow: 'var(--shadow-composer)',
             }}
           >
+            {/* `@` 워크스페이스 파일·폴더 멘션 자동완성 팝오버 */}
+            {mentionMenuOpen && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="absolute bottom-full left-0 right-0 mb-2 rounded-2xl border p-1.5 z-50 max-h-64 overflow-y-auto scroll-thin"
+                style={{
+                  background: 'var(--card)',
+                  borderColor: 'var(--border)',
+                  boxShadow: 'var(--shadow-popover)',
+                }}
+              >
+                <div
+                  className="px-2.5 py-1 flex items-center justify-between text-[10.5px] font-semibold"
+                  style={{ color: 'var(--muted)' }}
+                >
+                  <span>@ 파일 · 폴더 멘션 ({state.cwd.split('/').pop() || '/'})</span>
+                  <span>↑↓ 선택 · Tab/Enter 삽입 · Esc 닫기</span>
+                </div>
+                {mentionItems.slice(0, 12).map((entry, idx) => {
+                  const selected = idx === Math.min(mentionIndex, Math.min(mentionItems.length, 12) - 1);
+                  return (
+                    <button
+                      key={entry.fullPath}
+                      type="button"
+                      onMouseEnter={() => setMentionIndex(idx)}
+                      onClick={() => selectMentionItem(entry)}
+                      className="w-full text-left px-2.5 py-1.5 rounded-xl flex items-center justify-between gap-3 text-xs cursor-pointer transition-colors"
+                      style={{
+                        background: selected ? 'var(--surface-active)' : undefined,
+                        color: 'var(--fg)',
+                      }}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        {entry.isDir ? (
+                          <Folder size={13} className="shrink-0" style={{ color: 'var(--accent)' }} />
+                        ) : (
+                          <FileText size={13} className="shrink-0" style={{ color: 'var(--muted)' }} />
+                        )}
+                        <span className="font-mono text-[12px] truncate">{entry.relPath}</span>
+                      </div>
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded-md shrink-0"
+                        style={{ background: 'var(--surface)', color: 'var(--muted)' }}
+                      >
+                        {entry.isDir ? '폴더' : '파일'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             {/* 슬래시 명령어 · 설치된 스킬 자동완성 팝오버 */}
             {slashMenuOpen && (
               <div
@@ -1048,6 +1286,32 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     compositionDataRef.current || currentVal.slice(-1)
                   );
 
+                if (mentionMenuOpen && !composing) {
+                  const visibleCount = Math.min(mentionItems.length, 12);
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setMentionIndex((i) => (i + 1) % visibleCount);
+                    return;
+                  }
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setMentionIndex((i) => (i - 1 + visibleCount) % visibleCount);
+                    return;
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setMentionDismissed(true);
+                    return;
+                  }
+                  if (e.key === 'Tab' || (isEnterKey && !e.shiftKey && !e.metaKey && !e.ctrlKey)) {
+                    const target = mentionItems[Math.min(mentionIndex, visibleCount - 1)];
+                    if (target) {
+                      e.preventDefault();
+                      selectMentionItem(target);
+                      return;
+                    }
+                  }
+                }
                 if (slashMenuOpen && !composing) {
                   const visibleCount = Math.min(filteredSlashItems.length, 12);
                   if (e.key === 'ArrowDown') {
@@ -1087,8 +1351,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               }}
               placeholder={
                 cfg.sendKey === 'cmd-enter'
-                  ? '무엇이든 물어보세요 · / 명령어·스킬 · Cmd+Enter 전송 · 이미지 붙여넣기'
-                  : '무엇이든 물어보세요 · / 명령어·스킬 · 파일 드래그·붙여넣기'
+                  ? '무엇이든 물어보세요, @로 멘션, /로 작업 실행 · Cmd+Enter 전송'
+                  : '무엇이든 물어보세요, @로 멘션, /로 작업 실행'
               }
               className="w-full bg-transparent outline-none resize-none text-[14px] leading-relaxed"
               style={{ color: 'var(--fg)' }}
@@ -1097,7 +1361,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
             {/* 컴포저 내부 하단 컨트롤 바 */}
             <div className="mt-2 flex items-center justify-between gap-1.5 text-[12.5px] min-w-0">
               <div className="flex items-center gap-1 min-w-0 flex-1 relative">
-                {/* + 첨부 / 작업 폴더 메뉴 */}
+                {/* + 컨텍스트 추가 메뉴 (순정 Antigravity 동일 구성) */}
                 <div className="relative shrink-0">
                   <button
                     type="button"
@@ -1109,8 +1373,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     }}
                     className="p-1.5 rounded-full hover:bg-[var(--surface)] cursor-pointer transition-colors shrink-0"
                     style={{ color: 'var(--muted)' }}
-                    title="파일 첨부 · 작업 폴더 · 추가 폴더 (--add-dir)"
-                    aria-label="첨부 및 폴더 메뉴"
+                    title="컨텍스트 추가"
+                    aria-label="컨텍스트 추가"
                   >
                     <Plus size={16} />
                   </button>
@@ -1118,54 +1382,75 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   {plusMenuOpen && (
                     <div
                       onClick={(e) => e.stopPropagation()}
-                      className="absolute bottom-full left-0 mb-2 w-56 rounded-2xl border p-1.5 z-50 space-y-0.5"
+                      className="absolute bottom-full left-0 mb-2 w-52 rounded-2xl border p-1.5 z-50 space-y-0.5"
                       style={{
                         background: 'var(--card)',
                         borderColor: 'var(--border)',
                         boxShadow: 'var(--shadow-popover)',
                       }}
                     >
+                      <div className="px-2.5 py-1 text-[11px] font-semibold" style={{ color: 'var(--muted)' }}>
+                        컨텍스트 추가
+                      </div>
                       <button
                         type="button"
                         onClick={() => void handlePickFiles()}
-                        className="w-full text-left px-2.5 py-2 rounded-xl text-xs cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
+                        className="w-full text-left px-2.5 py-1.5 rounded-xl text-[13px] cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
                         style={{ color: 'var(--fg)' }}
                       >
-                        <ImagePlus size={14} style={{ color: 'var(--muted)' }} />
-                        <div className="min-w-0">
-                          <div className="font-medium">파일 · 이미지 첨부</div>
-                          <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>
-                            드래그 또는 ⌘V 붙여넣기 가능
-                          </div>
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handlePickCwd()}
-                        className="w-full text-left px-2.5 py-2 rounded-xl text-xs cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
-                        style={{ color: 'var(--fg)' }}
-                      >
-                        <FolderOpen size={14} style={{ color: 'var(--muted)' }} />
-                        <div className="min-w-0">
-                          <div className="font-medium">작업 폴더 변경</div>
-                          <div className="text-[10.5px] truncate font-mono" style={{ color: 'var(--muted)' }}>
-                            {state.cwd.split('/').pop() || '/'}
-                          </div>
-                        </div>
+                        <Paperclip size={15} style={{ color: 'var(--muted)' }} />
+                        <span>파일</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => void handleAddExtraDir()}
-                        className="w-full text-left px-2.5 py-2 rounded-xl text-xs cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
+                        className="w-full text-left px-2.5 py-1.5 rounded-xl text-[13px] cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
                         style={{ color: 'var(--fg)' }}
                       >
-                        <FolderPlus size={14} style={{ color: 'var(--muted)' }} />
-                        <div className="min-w-0">
-                          <div className="font-medium">추가 폴더 연결</div>
-                          <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>
-                            agy --add-dir 컨텍스트 확장
-                          </div>
-                        </div>
+                        <Folder size={15} style={{ color: 'var(--muted)' }} />
+                        <span>폴더</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={triggerMentionFromMenu}
+                        className="w-full text-left px-2.5 py-1.5 rounded-xl text-[13px] cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
+                        style={{ color: 'var(--fg)' }}
+                      >
+                        <AtSign size={15} style={{ color: 'var(--muted)' }} />
+                        <span>멘션</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={triggerSlashFromMenu}
+                        className="w-full text-left px-2.5 py-1.5 rounded-xl text-[13px] cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
+                        style={{ color: 'var(--fg)' }}
+                      >
+                        <SquareSlash size={15} style={{ color: 'var(--muted)' }} />
+                        <span>작업</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={triggerBrowserFromMenu}
+                        className="w-full text-left px-2.5 py-1.5 rounded-xl text-[13px] cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
+                        style={{ color: 'var(--fg)' }}
+                      >
+                        <Globe size={15} style={{ color: 'var(--muted)' }} />
+                        <span>브라우저</span>
+                      </button>
+                      <div className="border-t my-1" style={{ borderColor: 'var(--border)' }} />
+                      <button
+                        type="button"
+                        onClick={() => void handlePickCwd()}
+                        className="w-full text-left px-2.5 py-1.5 rounded-xl text-[12.5px] cursor-pointer hover:bg-[var(--surface)] flex items-center justify-between gap-2"
+                        style={{ color: 'var(--fg)' }}
+                      >
+                        <span className="inline-flex items-center gap-2.5">
+                          <FolderOpen size={14} style={{ color: 'var(--muted)' }} />
+                          <span>작업 폴더 변경</span>
+                        </span>
+                        <span className="text-[11px] font-mono truncate max-w-[70px]" style={{ color: 'var(--accent)' }}>
+                          {state.cwd.split('/').pop() || '/'}
+                        </span>
                       </button>
                     </div>
                   )}
