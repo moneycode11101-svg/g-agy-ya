@@ -85,7 +85,14 @@ export interface ChatSessionStoreState {
 
   hydrateSession: (tabSessionId: string, messages: ChatMessage[], metrics?: SessionMetrics | null) => void;
   setSessionMetrics: (tabSessionId: string, metrics: SessionMetrics) => void;
-  sendPrompt: (groupId: string, tabId: string, state: ChatTabState, prompt: string, images?: string[]) => Promise<void>;
+  sendPrompt: (
+    groupId: string,
+    tabId: string,
+    state: ChatTabState,
+    prompt: string,
+    images?: string[],
+    delivery?: 'queue' | 'immediate'
+  ) => Promise<void>;
   removeQueuedPrompt: (tabSessionId: string, queueId: string) => void;
   clearQueuedPrompts: (tabSessionId: string) => void;
   cancelTurn: (tabSessionId: string) => Promise<void>;
@@ -170,7 +177,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     }));
   },
 
-  sendPrompt: async (groupId, tabId, state, prompt, images) => {
+  sendPrompt: async (groupId, tabId, state, prompt, images, delivery) => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
     const cbs = get().callbacks;
@@ -178,7 +185,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
 
     const sid = state.sessionId;
     if (get().runningSessions[sid]) {
-      const mode = cbs.getPendingMessageMode();
+      const mode = delivery || cbs.getPendingMessageMode();
       if (mode === 'queue') {
         set((prev) => ({
           queuedPromptsBySession: {

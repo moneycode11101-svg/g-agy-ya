@@ -464,7 +464,7 @@ export const QueuedUserBubble: React.FC<{
     <button
       type="button"
       onClick={onCancel}
-      className="px-1.5 py-1 rounded-lg hover:bg-[var(--surface)] cursor-pointer text-[11px] opacity-65 hover:opacity-100 transition-opacity shrink-0"
+      className="p-1.5 rounded-lg hover:bg-[var(--surface)] cursor-pointer text-[11px] opacity-55 hover:opacity-100 transition-opacity shrink-0"
       style={{ color: 'var(--muted)' }}
       title="대기 중인 메시지 취소"
       aria-label="대기 중인 메시지 취소"
@@ -476,21 +476,17 @@ export const QueuedUserBubble: React.FC<{
       style={{
         fontSize: 'var(--chat-font-size, 14px)',
         background: 'var(--card)',
-        borderColor: 'var(--border-strong)',
-        color: 'var(--fg-soft)',
+        borderColor: 'var(--border)',
+        color: 'var(--fg)',
         boxShadow: 'var(--shadow-sm)',
       }}
     >
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 animate-pulse"
-        style={{ background: 'color-mix(in srgb, var(--accent) 6%, transparent)' }}
+        style={{ background: 'color-mix(in srgb, var(--fg) 5%, transparent)' }}
       />
       <div className="relative">
-        <div className="flex items-center gap-1.5 mb-1 text-[10.5px] font-medium" style={{ color: 'var(--accent)' }}>
-          <Loader2 size={10} className="animate-spin" />
-          <span>대기 중 · 현재 응답 완료 후 자동 전송</span>
-        </div>
         {images && images.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-1.5">
             {images.map((img) => (
@@ -506,6 +502,10 @@ export const QueuedUserBubble: React.FC<{
           </div>
         )}
         <div>{prompt}</div>
+        <div className="mt-1 flex items-center gap-1 text-[10.5px]" style={{ color: 'var(--muted)' }}>
+          <Loader2 size={9} className="animate-spin" />
+          <span>대기 중</span>
+        </div>
       </div>
     </div>
   </div>

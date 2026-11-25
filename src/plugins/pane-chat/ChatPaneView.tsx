@@ -22,7 +22,6 @@ import {
   Shield,
   ShieldAlert,
   Sparkles,
-  Square,
   Terminal,
   Trash2,
 } from 'lucide-react';
@@ -135,6 +134,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const isComposingRef = useRef(false);
+  const compositionDataRef = useRef('');
   const postSubmitGuardUntilRef = useRef(0);
 
   // Consume one-shot initialPrompt (e.g. from X-Ray "Ask Agent") so it does not repeat on reload
@@ -414,19 +414,35 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
     }
   };
 
-  const handleSubmit = async (e?: React.FormEvent) => {
+  const handleSubmit = async (e?: React.FormEvent, delivery?: 'queue' | 'immediate') => {
     e?.preventDefault();
-    const raw = textareaRef.current?.value ?? input;
+    const ta = textareaRef.current;
+    const raw = ta?.value ?? input;
     const text = raw.trim();
     if (!text) return;
-    postSubmitGuardUntilRef.current = Date.now() + 50;
-    setInput('');
-    if (textareaRef.current) {
-      textareaRef.current.value = '';
+
+    // Force macOS Korean IME to terminate any in-flight composition cleanly so no ghost syllable leaks back
+    postSubmitGuardUntilRef.current = Date.now() + 80;
+    if (isComposingRef.current && ta) {
+      isComposingRef.current = false;
+      compositionDataRef.current = '';
+      ta.blur();
+      ta.value = '';
+      setInput('');
+      requestAnimationFrame(() => {
+        if (textareaRef.current) {
+          textareaRef.current.value = '';
+          textareaRef.current.focus();
+        }
+      });
+    } else {
+      setInput('');
+      if (ta) ta.value = '';
     }
+
     const imgs = [...attachedImages];
     setAttachedImages([]);
-    await sendPrompt(groupId, tab.id, state, text, imgs);
+    await sendPrompt(groupId, tab.id, state, text, imgs, delivery);
   };
 
   const handleMarkdownClick = (e: React.MouseEvent) => {
@@ -978,12 +994,18 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
             <textarea
               ref={textareaRef}
               rows={1}
+              spellCheck={false}
               value={input}
-              onCompositionStart={() => {
+              onCompositionStart={(e) => {
                 isComposingRef.current = true;
+                compositionDataRef.current = e.data || '';
+              }}
+              onCompositionUpdate={(e) => {
+                compositionDataRef.current = e.data || '';
               }}
               onCompositionEnd={(e) => {
                 isComposingRef.current = false;
+                compositionDataRef.current = '';
                 if (Date.now() < postSubmitGuardUntilRef.current) {
                   setInput('');
                   if (textareaRef.current) textareaRef.current.value = '';
@@ -1001,7 +1023,31 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               }}
               onPaste={handlePaste}
               onKeyDown={(e) => {
-                const composing = e.nativeEvent.isComposing || e.keyCode === 229 || isComposingRef.current;
+                // Ctrl+C cancels an active turn when nothing is selected (matches vanilla Antigravity)
+                if (
+                  isRunning &&
+                  e.ctrlKey &&
+                  !e.metaKey &&
+                  !e.altKey &&
+                  e.key.toLowerCase() === 'c' &&
+                  !window.getSelection()?.toString()
+                ) {
+                  e.preventDefault();
+                  void cancelTurn(sessionId);
+                  return;
+                }
+
+                const composing =
+                  e.nativeEvent.isComposing || e.keyCode === 229 || isComposingRef.current;
+                const isEnterKey = e.key === 'Enter' || e.code === 'Enter';
+                const currentVal = e.currentTarget.value;
+                // Korean 2-beolsik has no candidate popup: allow single-Enter submission while Hangul composes
+                const isHangulComposing =
+                  composing &&
+                  /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7A3]/.test(
+                    compositionDataRef.current || currentVal.slice(-1)
+                  );
+
                 if (slashMenuOpen && !composing) {
                   const visibleCount = Math.min(filteredSlashItems.length, 12);
                   if (e.key === 'ArrowDown') {
@@ -1019,20 +1065,23 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     setSlashDismissed(true);
                     return;
                   }
-                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey)) {
+                  if (e.key === 'Tab' || (isEnterKey && !e.shiftKey && !e.metaKey && !e.ctrlKey)) {
                     const target = filteredSlashItems[Math.min(slashIndex, visibleCount - 1)];
-                    if (target && input.trim().toLowerCase() !== target.command.toLowerCase()) {
+                    if (target && currentVal.trim().toLowerCase() !== target.command.toLowerCase()) {
                       e.preventDefault();
                       selectSlashItem(target);
                       return;
                     }
                   }
                 }
-                if (e.key === 'Enter' && !composing) {
+                if (isEnterKey && (!composing || isHangulComposing)) {
                   const wantCmd = cfg.sendKey === 'cmd-enter';
-                  if ((wantCmd && (e.metaKey || e.ctrlKey)) || (!wantCmd && !e.shiftKey)) {
+                  const isAltImmediate = isRunning && e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey;
+                  const isNormalSend =
+                    (wantCmd && (e.metaKey || e.ctrlKey)) || (!wantCmd && !e.shiftKey && !e.altKey);
+                  if (isAltImmediate || isNormalSend) {
                     e.preventDefault();
-                    void handleSubmit();
+                    void handleSubmit(undefined, isAltImmediate ? 'immediate' : undefined);
                   }
                 }
               }}
@@ -1427,26 +1476,27 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   )}
                 </div>
 
-                {isRunning && (
+                {isRunning && !input.trim() ? (
                   <button
                     type="button"
                     onClick={() => void cancelTurn(sessionId)}
-                    className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer transition-opacity hover:opacity-90"
-                    style={{ background: 'var(--danger)', color: '#fff' }}
-                    title="응답 중지"
+                    className="w-7 h-7 rounded-full flex items-center justify-center cursor-pointer transition-opacity hover:opacity-85"
+                    style={{ background: 'var(--surface)' }}
+                    title="응답 중지 (⌃C)"
+                    aria-label="응답 중지 (⌃C)"
                   >
-                    <Square size={12} fill="currentColor" />
+                    <span className="w-2.5 h-2.5 rounded-[2px]" style={{ background: '#ef4444' }} />
                   </button>
-                )}
-                {(!isRunning || input.trim().length > 0) && (
+                ) : (
                   <button
                     type="submit"
                     disabled={!input.trim() || !adapterAvailable}
-                    className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer transition-opacity disabled:opacity-35 hover:opacity-90"
+                    className="w-7 h-7 rounded-full flex items-center justify-center cursor-pointer transition-all disabled:opacity-35 hover:opacity-90"
                     style={{ background: 'var(--accent)', color: '#fff' }}
-                    title={isRunning ? '대기열에 추가 (Enter)' : '전송 (Enter)'}
+                    title={isRunning ? '대기열에 추가 (Enter · ⌥Enter 즉시 전송)' : '전송 (Enter)'}
+                    aria-label={isRunning ? '대기열에 추가' : '전송'}
                   >
-                    <ArrowRight size={16} strokeWidth={2.2} />
+                    <ArrowRight size={15} strokeWidth={2.2} />
                   </button>
                 )}
               </div>
