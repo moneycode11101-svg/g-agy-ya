@@ -2,18 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { Cpu, RefreshCw } from 'lucide-react';
 import { SchemaSettingsForm } from '../../kernel/client/SchemaSettingsForm';
 import type { ClientPluginModule, DeskClientContext } from '../../kernel/shared/types';
+import type { ClientAgentAdapterDescriptor } from '../../shared/agentProtocol';
 import type { AccountQuotaSnapshot } from '../../shared/types';
 import { fmtReset, quotaBucketTitle } from '../../utils/formatKo';
 import { AGENT_AGY_MANIFEST } from './manifest';
-import { AGY_BUS, AGY_RPC, type AgyPluginConfig, type AgyRuntimeInfo } from './types';
+import { AGY_BUS, AGY_RPC, FALLBACK_AGY_MODELS, type AgyPluginConfig, type AgyRuntimeInfo } from './types';
 
-export interface ClientAgentAdapterDescriptor {
-  readonly id: string;
-  readonly displayName: string;
-  readonly rpcPrefix: string;
-  readonly busEventTopic: string;
-  readonly busQuotaTopic: string;
-}
+export type { ClientAgentAdapterDescriptor };
 
 const DonutRing: React.FC<{ pct: number }> = ({ pct }) => {
   const clamped = Math.max(0, Math.min(100, pct));
@@ -43,10 +38,21 @@ export const agentAgyClientPlugin: ClientPluginModule<AgyPluginConfig> = {
   activate(ctx: DeskClientContext<AgyPluginConfig>) {
     const descriptor: ClientAgentAdapterDescriptor = {
       id: 'agent-agy',
+      shortLabel: '반중력',
       displayName: 'Antigravity CLI (agy)',
+      accentColor: '#3b82f6',
       rpcPrefix: 'agent-agy',
       busEventTopic: AGY_BUS.EVENT,
       busQuotaTopic: AGY_BUS.QUOTA_UPDATED,
+      capabilities: {
+        quota: true,
+        runtimeAssets: true,
+        sessionHistory: true,
+        interactiveApproval: true,
+        userQuestions: false,
+        steering: false,
+      },
+      fallbackModels: FALLBACK_AGY_MODELS,
     };
 
     ctx.services.provide('agent-adapter:agy', descriptor);

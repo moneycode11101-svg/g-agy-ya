@@ -13,7 +13,9 @@ import type { AgyPluginConfig } from '../agent-agy/types';
 import { useChatSessionStore, type ChatTabState } from '../pane-chat/chatStore';
 import type { HudTokenBarConfig } from './manifest';
 
-function inferModelGroup(model?: string): QuotaGroupKey {
+function inferModelGroup(model?: string, adapterId?: string): QuotaGroupKey {
+  if (adapterId === 'agent-codex') return 'codex';
+  if (adapterId === 'agent-claude') return 'claude';
   const m = String(model || '').toLowerCase();
   if (m.includes('claude') || m.includes('gpt') || m.includes('o1') || m.includes('o3') || m.includes('o4')) {
     return 'claude';
@@ -22,15 +24,18 @@ function inferModelGroup(model?: string): QuotaGroupKey {
 }
 
 function inferBucketGroup(b: QuotaBucket): QuotaGroupKey {
-  if (b.group === 'gemini' || b.group === 'claude') return b.group;
-  return `${b.id} ${b.groupName || ''}`.toLowerCase().includes('gemini') ? 'gemini' : 'claude';
+  if (b.group === 'gemini' || b.group === 'claude' || b.group === 'codex') return b.group;
+  const hay = `${b.id} ${b.groupName || ''}`.toLowerCase();
+  if (hay.includes('codex')) return 'codex';
+  return hay.includes('gemini') ? 'gemini' : 'claude';
 }
 
 function inferBucketWindow(b: QuotaBucket): QuotaWindow | undefined {
-  if (b.window === '5h' || b.window === 'weekly') return b.window;
+  if (b.window === '5h' || b.window === 'weekly' || b.window === 'monthly') return b.window;
   const s = b.id.toLowerCase();
   if (s.includes('5h') || s.includes('five')) return '5h';
   if (s.includes('week')) return 'weekly';
+  if (s.includes('month') || s.includes('credit')) return 'monthly';
   return undefined;
 }
 
@@ -38,7 +43,9 @@ function sortGroupBuckets(list: QuotaBucket[]): QuotaBucket[] {
   const rank = (b: QuotaBucket) => {
     const w = inferBucketWindow(b);
     if (w === '5h') return 0;
-    if (w === 'weekly') return 1;
+    if (w === 'weekly') {
+      return /^claude-weekly-.+/.test(b.id) ? 1.5 : 1;
+    }
     return 2;
   };
   return [...list].sort((a, b) => rank(a) - rank(b));
@@ -50,9 +57,16 @@ function bucketUsedPct(b: QuotaBucket): number {
 }
 
 function windowLabel(b: QuotaBucket): string {
+  const scopedMatch = /^claude-weekly-(.+)$/.exec(b.id);
+  if (scopedMatch) {
+    const raw = b.groupName?.includes('·') ? b.groupName.split('·').pop()?.trim() : scopedMatch[1];
+    const clean = (raw || scopedMatch[1]).slice(0, 6);
+    return clean.charAt(0).toUpperCase() + clean.slice(1);
+  }
   const w = inferBucketWindow(b);
   if (w === '5h') return '5시간';
   if (w === 'weekly') return '주간';
+  if (w === 'monthly') return '월간';
   return b.id.length > 6 ? b.id.slice(0, 6) : b.id;
 }
 
@@ -65,16 +79,19 @@ export interface TokenBarWidgetProps {
 export const TokenBarWidget: React.FC<TokenBarWidgetProps> = ({ groupId, tab, ctx }) => {
   const state = tab.state as ChatTabState;
   const sessionId = state?.sessionId || '';
+  const adapterId = state?.adapterId || BUILTIN_PLUGIN_IDS.AGENT_AGY;
   const cfg = ctx.config.useConfig();
   const warnPct = typeof cfg.newRoomWarnPct === 'number' ? cfg.newRoomWarnPct : 35;
 
   const metrics = useChatSessionStore((s) => s.metricsBySession[sessionId]);
-  const accountQuota = useChatSessionStore((s) => s.accountQuota);
+  const accountQuota = useChatSessionStore(
+    (s) => s.accountQuotaByAdapter[adapterId] ?? (adapterId === 'agent-agy' ? s.accountQuota : null)
+  );
   const loadingQuota = useChatSessionStore((s) => s.loadingQuota);
   const refreshAccountQuota = useChatSessionStore((s) => s.refreshAccountQuota);
   const groups = useLayoutStore((s) => s.groups);
   const agyDefaultModel = usePluginConfigStore(
-    (s) => (s.configsByPlugin[BUILTIN_PLUGIN_IDS.AGENT_AGY] as Partial<AgyPluginConfig> | undefined)?.defaultModel
+    (s) => (s.configsByPlugin[adapterId] as Partial<AgyPluginConfig> | undefined)?.defaultModel
   );
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -101,7 +118,7 @@ export const TokenBarWidget: React.FC<TokenBarWidgetProps> = ({ groupId, tab, ct
 
   const effectiveModel =
     state?.model && state.model !== 'default' ? state.model : metrics?.model || agyDefaultModel || '';
-  const inferredGroup = inferModelGroup(effectiveModel);
+  const inferredGroup = inferModelGroup(effectiveModel, adapterId);
   const [groupOverride, setGroupOverride] = useState<QuotaGroupKey | null>(null);
 
   useEffect(() => {
@@ -130,19 +147,32 @@ export const TokenBarWidget: React.FC<TokenBarWidgetProps> = ({ groupId, tab, ct
 
   const geminiBuckets = sortGroupBuckets(allQuotas.filter((b) => inferBucketGroup(b) === 'gemini'));
   const claudeBuckets = sortGroupBuckets(allQuotas.filter((b) => inferBucketGroup(b) === 'claude'));
-  const hasBothGroups = geminiBuckets.length > 0 && claudeBuckets.length > 0;
+  const codexBuckets = sortGroupBuckets(allQuotas.filter((b) => inferBucketGroup(b) === 'codex'));
+  const hasBothGroups = adapterId === 'agent-agy' && geminiBuckets.length > 0 && claudeBuckets.length > 0;
 
   const desiredGroup = groupOverride ?? inferredGroup;
   const activeGroup: QuotaGroupKey =
-    desiredGroup === 'claude'
-      ? claudeBuckets.length > 0
-        ? 'claude'
-        : 'gemini'
-      : geminiBuckets.length > 0
-        ? 'gemini'
-        : 'claude';
-  const activeBuckets = activeGroup === 'gemini' ? geminiBuckets : claudeBuckets;
-  const activeTitle = activeGroup === 'gemini' ? 'Gemini 사용 한도' : 'Claude·GPT 한도';
+    adapterId === 'agent-codex' && codexBuckets.length > 0
+      ? 'codex'
+      : desiredGroup === 'claude'
+        ? claudeBuckets.length > 0
+          ? 'claude'
+          : 'gemini'
+        : geminiBuckets.length > 0
+          ? 'gemini'
+          : claudeBuckets.length > 0
+            ? 'claude'
+            : 'codex';
+  const activeBuckets =
+    activeGroup === 'codex' ? codexBuckets : activeGroup === 'gemini' ? geminiBuckets : claudeBuckets;
+  const activeTitle =
+    activeGroup === 'codex'
+      ? 'Codex (짚) 한도'
+      : activeGroup === 'gemini'
+        ? 'Gemini 사용 한도'
+        : adapterId === 'agent-claude'
+          ? 'Claude Code 한도'
+          : 'Claude·GPT 한도';
 
   const totalGroups = Object.keys(groups).length;
   const compact = Boolean(cfg.forceCompact) || boxWidth < 580 || (totalGroups > 1 && invocations === 0);
@@ -289,10 +319,10 @@ export const TokenBarWidget: React.FC<TokenBarWidgetProps> = ({ groupId, tab, ct
           {drawerTab === 'quota' && (
             <button
               type="button"
-              onClick={() => void refreshAccountQuota(true)}
+              onClick={() => void refreshAccountQuota(true, adapterId)}
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] cursor-pointer hover:bg-[var(--surface)]"
               style={{ color: 'var(--muted)' }}
-              title="agy /usage로 사용 한도 새로고침"
+              title={`${adapterId} 사용 한도 새로고침`}
             >
               <RefreshCw size={11} className={loadingQuota ? 'animate-spin' : ''} />
               <span>갱신</span>
@@ -399,7 +429,7 @@ export const TokenBarWidget: React.FC<TokenBarWidgetProps> = ({ groupId, tab, ct
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-[11.5px]">
                   <span className="font-semibold" style={{ color: 'var(--fg)' }}>
-                    Claude · GPT
+                    {adapterId === 'agent-claude' ? 'Claude Code' : 'Claude · GPT'}
                   </span>
                   <span style={{ color: 'var(--muted)' }}>
                     {quotaDisplayMode === 'used' ? '사용량 % · │ 균등' : '남은량 %'}
@@ -408,12 +438,33 @@ export const TokenBarWidget: React.FC<TokenBarWidgetProps> = ({ groupId, tab, ct
                 {claudeBuckets.map((b) => renderQuotaRow(b, true))}
               </div>
             )}
+            {codexBuckets.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11.5px]">
+                  <span className="font-semibold" style={{ color: 'var(--fg)' }}>
+                    Codex (GPT)
+                  </span>
+                  <span style={{ color: 'var(--muted)' }}>
+                    {quotaDisplayMode === 'used' ? '사용량 % · │ 균등' : '남은량 %'}
+                  </span>
+                </div>
+                {codexBuckets.map((b) => renderQuotaRow(b, true))}
+              </div>
+            )}
           </div>
           <div className="flex items-center justify-between text-[11px]" style={{ color: 'var(--muted)' }}>
             <span>
-              {quotaUpdatedAt
-                ? `agy /usage 실시간 동기화 · ${fmtAgo(Date.parse(quotaUpdatedAt)) || '방금'}`
-                : 'agy /usage 실시간 동기화'}
+              {(() => {
+                const sourceLabel =
+                  adapterId === 'agent-claude'
+                    ? 'Claude SDK 실시간 동기화'
+                    : adapterId === 'agent-codex'
+                      ? 'Codex app-server 실시간 동기화'
+                      : 'agy /usage 실시간 동기화';
+                return quotaUpdatedAt
+                  ? `${sourceLabel} · ${fmtAgo(Date.parse(quotaUpdatedAt)) || '방금'}`
+                  : sourceLabel;
+              })()}
             </span>
             <button
               type="button"
@@ -427,7 +478,9 @@ export const TokenBarWidget: React.FC<TokenBarWidgetProps> = ({ groupId, tab, ct
         </div>
       ) : (
         <div className="py-1 text-[11.5px]" style={{ color: 'var(--muted)' }}>
-          {loadingQuota ? 'agy /usage 사용 한도를 불러오는 중…' : '계정 사용 한도를 아직 불러오지 못했습니다.'}
+          {loadingQuota
+            ? `${adapterId === 'agent-claude' ? 'Claude' : adapterId === 'agent-codex' ? 'Codex' : 'agy /usage'} 사용 한도를 불러오는 중…`
+            : '계정 사용 한도를 아직 불러오지 못했습니다.'}
         </div>
       )}
     </div>

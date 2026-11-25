@@ -1,6 +1,10 @@
 import type { BuiltinPluginPackage, ClientPluginModule } from '../kernel/shared/types';
 import { agentAgyClientPlugin } from './agent-agy/client';
 import { AGENT_AGY_MANIFEST } from './agent-agy/manifest';
+import { agentClaudeClientPlugin } from './agent-claude/client';
+import { AGENT_CLAUDE_MANIFEST } from './agent-claude/manifest';
+import { agentCodexClientPlugin } from './agent-codex/client';
+import { AGENT_CODEX_MANIFEST } from './agent-codex/manifest';
 import { hudTokenBarClientPlugin } from './hud-token-bar/client';
 import { HUD_TOKEN_BAR_MANIFEST } from './hud-token-bar/manifest';
 import { paneChatClientPlugin } from './pane-chat/client';
@@ -11,13 +15,21 @@ import { sidebarWorkspaceClientPlugin } from './sidebar-workspace/client';
 import { SIDEBAR_WORKSPACE_MANIFEST } from './sidebar-workspace/manifest';
 
 /**
- * Wave 2 Agent & Data Client plugin packages (5 bundled plugins).
+ * Wave 2 Agent & Data Client plugin packages (7 bundled plugins: 3 agent engines + 4 workspace/UI plugins).
  * Registered into Renderer via `bootstrapClientKernel({ builtins: [...AGENT_CLIENT_PLUGINS, ...] })`.
  */
 export const AGENT_CLIENT_PLUGINS: BuiltinPluginPackage[] = [
   {
     manifest: AGENT_AGY_MANIFEST,
     client: agentAgyClientPlugin as ClientPluginModule,
+  },
+  {
+    manifest: AGENT_CLAUDE_MANIFEST,
+    client: agentClaudeClientPlugin as ClientPluginModule,
+  },
+  {
+    manifest: AGENT_CODEX_MANIFEST,
+    client: agentCodexClientPlugin as ClientPluginModule,
   },
   {
     manifest: PANE_CHAT_MANIFEST,

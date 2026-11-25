@@ -39,9 +39,10 @@ import {
   type PaneComponentProps,
 } from '../../kernel/client';
 import type { ChatMessage, ChatMode, SessionMetrics } from '../../shared/types';
+import { agentRpc, type AgentLoadedSession } from '../../shared/agentProtocol';
 import { fmtKo } from '../../utils/formatKo';
-import { AGY_RPC, type AgyLoadedSession } from '../agent-agy/types';
 import { AssistantTurnView, QueuedUserBubble, UserMessageBubble } from './AssistantTurnView';
+import { QuestionPromptCard } from './QuestionPromptCard';
 import { useChatSessionStore, type ChatTabState, type QueuedPromptItem } from './chatStore';
 import type { PaneChatConfig } from './manifest';
 import {
@@ -87,6 +88,7 @@ export interface ChatPaneViewProps extends PaneComponentProps<ChatTabState> {
 export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, updateState, ctx }) => {
   const state = tab.state;
   const sessionId = state.sessionId;
+  const adapterId = state.adapterId || BUILTIN_PLUGIN_IDS.AGENT_AGY;
   const externalSessionId = state.externalSessionId ?? state.agyConversationId ?? null;
 
   const cfg = ctx.config.useConfig();
@@ -96,9 +98,15 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const isRunning = useChatSessionStore((s) => Boolean(s.runningSessions[sessionId]));
   const authPrompt = useChatSessionStore((s) => s.authPrompts[sessionId]);
   const permissionPrompt = useChatSessionStore((s) => s.permissionPrompts[sessionId]);
+  const questionPrompt = useChatSessionStore((s) => s.questionPrompts[sessionId]);
+  const notices = useChatSessionStore((s) => s.noticesBySession[sessionId]);
   const errorText = useChatSessionStore((s) => s.errorsBySession[sessionId]);
-  const adapterAvailable = useChatSessionStore((s) => s.adapterAvailable);
-  const availableModels = useChatSessionStore((s) => s.availableModels);
+  const availableAdapters = useChatSessionStore((s) => s.availableAdapters);
+  const currentAdapter = availableAdapters.find((a) => a.id === adapterId) || null;
+  const adapterAvailable = Boolean(currentAdapter);
+  const availableModels = useChatSessionStore(
+    (s) => s.availableModelsByAdapter[adapterId] ?? s.availableModels
+  );
   const availableCommands = useChatSessionStore((s) => s.availableCommands);
   const refreshModels = useChatSessionStore((s) => s.refreshModels);
   const sendPrompt = useChatSessionStore((s) => s.sendPrompt);
@@ -107,6 +115,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const cancelTurn = useChatSessionStore((s) => s.cancelTurn);
   const submitAuthCode = useChatSessionStore((s) => s.submitAuthCode);
   const respondPermission = useChatSessionStore((s) => s.respondPermission);
+  const respondQuestion = useChatSessionStore((s) => s.respondQuestion);
+  const dismissNotice = useChatSessionStore((s) => s.dismissNotice);
   const hydrateSession = useChatSessionStore((s) => s.hydrateSession);
   const setSessionMetrics = useChatSessionStore((s) => s.setSessionMetrics);
 
@@ -117,7 +127,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const registeredPaneTypes = useSlotRegistry((s) => s.paneTypes);
   const contextMenuContribs = useSlotRegistry((s) => s.bySlot['context-menu.item']);
   const runtimeAssets = useIntrospectionStore(
-    (s) => s.snapshot?.runtimeAssetsByAdapter?.[BUILTIN_PLUGIN_IDS.AGENT_AGY]?.assets
+    (s) => s.snapshot?.runtimeAssetsByAdapter?.[adapterId]?.assets
   );
 
   const [input, setInput] = useState(state.initialPrompt || '');
@@ -213,7 +223,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
     const existingMetrics = useChatSessionStore.getState().metricsBySession[sessionId];
     if (!existingMsgs?.length && !existingMetrics) {
       void ctx.rpc
-        .invoke<AgyLoadedSession>(AGY_RPC.SESSIONS_LOAD, { conversationId: externalSessionId })
+        .invoke<AgentLoadedSession>(agentRpc(adapterId, 'sessions.load'), { conversationId: externalSessionId })
         .then((loaded) => {
           if (cancelled || !loaded) return;
           hydrateSession(sessionId, loaded.messages, loaded.metrics);
@@ -222,7 +232,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
     }
 
     void ctx.rpc
-      .invoke<SessionMetrics | null>(AGY_RPC.SESSIONS_WATCH, {
+      .invoke<SessionMetrics | null>(agentRpc(adapterId, 'sessions.watch'), {
         tabSessionId: sessionId,
         conversationId: externalSessionId,
       })
@@ -234,9 +244,9 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
 
     return () => {
       cancelled = true;
-      void ctx.rpc.invoke(AGY_RPC.SESSIONS_UNWATCH, { tabSessionId: sessionId }).catch(() => {});
+      void ctx.rpc.invoke(agentRpc(adapterId, 'sessions.unwatch'), { tabSessionId: sessionId }).catch(() => {});
     };
-  }, [adapterAvailable, ctx.rpc, externalSessionId, hydrateSession, sessionId, setSessionMetrics]);
+  }, [adapterAvailable, adapterId, ctx.rpc, externalSessionId, hydrateSession, sessionId, setSessionMetrics]);
 
   const modelFamilies = useMemo(() => groupModelsIntoFamilies(availableModels), [availableModels]);
   const activeModelFamily = useMemo(
@@ -324,10 +334,22 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const handleRefreshModels = async () => {
     setRefreshingModels(true);
     try {
-      await refreshModels(true);
+      await refreshModels(true, adapterId);
     } finally {
       setRefreshingModels(false);
     }
+  };
+
+  const handleSwitchAdapter = (nextAdapterId: string) => {
+    if (nextAdapterId === adapterId) return;
+    updateState({
+      adapterId: nextAdapterId,
+      model: 'default',
+      effort: 'default',
+      externalSessionId: null,
+      agyConversationId: null,
+    });
+    void refreshModels(false, nextAdapterId);
   };
 
   const handlePickCwd = async () => {
@@ -451,7 +473,11 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const colMaxWidthClass =
     cfg.chatWidth === 'wide' ? 'max-w-none' : cfg.chatWidth === 'medium' ? 'max-w-[900px]' : 'max-w-[740px]';
 
-  const currentModelLabel = formatModelDisplayLabel(state.model, availableModels);
+  const currentModelLabel = formatModelDisplayLabel(
+    state.model,
+    availableModels,
+    currentAdapter?.shortLabel || (adapterId === 'agent-claude' ? 'Claude' : adapterId === 'agent-codex' ? 'Codex' : 'agy')
+  );
   const modelHasEmbeddedTier = Boolean(
     state.model && state.model !== 'default' && /-(low|medium|high|xhigh|max)$/i.test(state.model)
   );
@@ -590,7 +616,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               }}
             >
               <div>
-                <div className="font-semibold">에이전트 어댑터(agent-agy)가 비활성화되어 있습니다.</div>
+                <div className="font-semibold">에이전트 어댑터({adapterId})가 비활성화되어 있습니다.</div>
                 <div className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>
                   플러그인을 다시 켜면 즉시 대화를 이어갈 수 있습니다.
                 </div>
@@ -600,25 +626,59 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                 onClick={() =>
                   void useIntrospectionStore.getState().sendCommand({
                     type: 'plugin:toggle',
-                    pluginId: BUILTIN_PLUGIN_IDS.AGENT_AGY,
+                    pluginId: adapterId,
                     enabled: true,
                   })
                 }
                 className="px-3 py-1.5 rounded-lg text-[11.5px] font-medium cursor-pointer shrink-0"
                 style={{ background: 'var(--accent)', color: '#fff' }}
               >
-                agent-agy 켜기
+                {adapterId} 켜기
               </button>
             </div>
           )}
 
           {messages.length === 0 ? (
-            <div className="pt-20 pb-8 flex flex-col items-center text-center gap-2">
+            <div className="pt-16 pb-8 flex flex-col items-center text-center gap-3">
               <div className="text-[20px] font-semibold tracking-tight" style={{ color: 'var(--fg)' }}>
                 무엇을 작업할까요?
               </div>
+              {availableAdapters.length > 1 && (
+                <div
+                  className="inline-flex items-center gap-1 p-1 rounded-xl border"
+                  style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+                >
+                  {availableAdapters.map((a) => {
+                    const active = a.id === adapterId;
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        onClick={() => handleSwitchAdapter(a.id)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[12px] cursor-pointer transition-all"
+                        style={{
+                          background: active ? 'var(--card)' : 'transparent',
+                          color: active ? 'var(--fg)' : 'var(--muted)',
+                          fontWeight: active ? 600 : 450,
+                          boxShadow: active ? 'var(--shadow-sm)' : undefined,
+                        }}
+                      >
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ background: a.accentColor }}
+                        />
+                        <span>{a.shortLabel}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               <div className="text-[13px] max-w-md leading-relaxed" style={{ color: 'var(--muted)' }}>
-                각 채팅은 공식 <code>agy acp</code> 상주 세션으로 연결됩니다. 상단 분할 버튼으로 플러그인 스튜디오·웹뷰·터미널을 옆에 자유롭게 띄워둘 수 있습니다.
+                {adapterId === 'agent-claude'
+                  ? 'Anthropic 공식 Claude Agent SDK 상주 세션으로 연결됩니다 (로컬 훅·CLAUDE.md 유지 · 텔레메트리 0%).'
+                  : adapterId === 'agent-codex'
+                    ? 'OpenAI Codex app-server(JSONL) 상주 세션으로 연결됩니다 (양방향 승인·질문·5시간/주간 한도 · 텔레메트리 0%).'
+                    : '각 채팅은 공식 agy acp 상주 세션으로 연결됩니다. 상단 분할 버튼으로 Claude·Codex·웹뷰·터미널을 옆에 띄워둘 수 있습니다.'}
               </div>
             </div>
           ) : (
@@ -719,6 +779,46 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                 </button>
               </div>
             </div>
+          )}
+
+          {notices && notices.length > 0 && (
+            <div className="space-y-1.5">
+              {notices.map((n) => (
+                <div
+                  key={n.id}
+                  className="rounded-xl border px-3.5 py-2 flex items-center justify-between gap-2 text-xs"
+                  style={{
+                    background:
+                      n.level === 'warn'
+                        ? 'color-mix(in srgb, var(--warn) 10%, var(--card))'
+                        : 'var(--surface)',
+                    borderColor:
+                      n.level === 'warn'
+                        ? 'color-mix(in srgb, var(--warn) 38%, transparent)'
+                        : 'var(--border)',
+                    color: 'var(--fg-soft)',
+                  }}
+                >
+                  <span className="truncate">{n.text}</span>
+                  <button
+                    type="button"
+                    onClick={() => dismissNotice(sessionId, n.id)}
+                    className="text-[11px] px-1.5 py-0.5 rounded hover:bg-[var(--card)] cursor-pointer shrink-0"
+                    style={{ color: 'var(--muted)' }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {questionPrompt && (
+            <QuestionPromptCard
+              prompt={questionPrompt}
+              onSubmit={(answers) => void respondQuestion(sessionId, questionPrompt.requestId, answers)}
+              onCancel={() => void respondQuestion(sessionId, questionPrompt.requestId, null)}
+            />
           )}
 
           {permissionPrompt && (
@@ -1122,7 +1222,41 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   )}
                 </div>
 
-                {/* 계층형 모델 선택 팝오버 (Antigravity 전체 모델 패밀리 + 티어 선택 + 사용량 보기) */}
+                {/* 에이전트 엔진 뱃지 (대화 시작 전에는 클릭해 반중력/Claude/Codex 순환 전환) */}
+                {availableAdapters.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (messages.length > 0 || isRunning || availableAdapters.length <= 1) return;
+                      const idx = availableAdapters.findIndex((a) => a.id === adapterId);
+                      const next = availableAdapters[(idx + 1) % availableAdapters.length];
+                      if (next) handleSwitchAdapter(next.id);
+                    }}
+                    className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11.5px] font-medium shrink-0 transition-colors ${
+                      messages.length === 0 && !isRunning && availableAdapters.length > 1
+                        ? 'cursor-pointer hover:bg-[var(--surface)]'
+                        : 'cursor-default opacity-85'
+                    }`}
+                    style={{
+                      background: 'var(--surface)',
+                      color: 'var(--fg-soft)',
+                    }}
+                    title={
+                      messages.length === 0 && !isRunning
+                        ? '클릭해서 에이전트 엔진 전환 (반중력 · Claude · Codex)'
+                        : `현재 엔진: ${currentAdapter?.displayName || adapterId}`
+                    }
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ background: currentAdapter?.accentColor || 'var(--accent)' }}
+                    />
+                    <span>{currentAdapter?.shortLabel || adapterId}</span>
+                  </button>
+                )}
+
+                {/* 계층형 모델 선택 팝오버 (Antigravity / Claude / Codex 모델 선택 + 사용량 보기) */}
                 <div className="relative min-w-0">
                   <button
                     type="button"
@@ -1134,7 +1268,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                         const next = !prev;
                         if (next) {
                           setActiveFamilyId(activeModelFamily?.id || modelFamilies[0]?.id || null);
-                          void refreshModels(false);
+                          void refreshModels(false, adapterId);
                         }
                         return next;
                       });
@@ -1288,7 +1422,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                             type="button"
                             onClick={() => {
                               setModelMenuOpen(false);
-                              void ctx.commands.execute('settings:open', 'agent-agy-settings');
+                              void ctx.commands.execute('settings:open', `${adapterId}-settings`);
                             }}
                             className="w-full text-left px-2.5 py-1.5 rounded-xl text-[12px] cursor-pointer hover:bg-[var(--surface)] flex items-center justify-between gap-2"
                             style={{ color: 'var(--fg-soft)' }}

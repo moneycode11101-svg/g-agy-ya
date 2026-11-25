@@ -10,8 +10,14 @@ import {
   type PaneTabRecord,
   type SplitDir,
 } from '../../kernel/client';
-import type { AccountQuotaSnapshot, AgyEvent, ChatMode, SessionSummary } from '../../shared/types';
-import { AGY_BUS, AGY_RPC, type AgyLoadedSession, type AgyPluginConfig } from '../agent-agy/types';
+import {
+  AGENT_BUS,
+  agentRpc,
+  type AgentLoadedSession,
+  type AgentQuotaBusPayload,
+  type ClientAgentAdapterDescriptor,
+} from '../../shared/agentProtocol';
+import type { AgentEvent, ChatMode, SessionSummary } from '../../shared/types';
 import { ChatPaneView } from './ChatPaneView';
 import { useChatSessionStore, type ChatTabState } from './chatStore';
 import { PANE_CHAT_MANIFEST, type PaneChatConfig } from './manifest';
@@ -26,13 +32,23 @@ function getDefaultCwd(ctx: DeskClientContext<PaneChatConfig>): string {
   return window.deskKernel?.env.homeDir || '/';
 }
 
-function getAgyDefaults(): Partial<AgyPluginConfig> {
-  return (usePluginConfigStore.getState().configsByPlugin[BUILTIN_PLUGIN_IDS.AGENT_AGY] || {}) as Partial<AgyPluginConfig>;
+function getAdapterDefaults(adapterId: string): {
+  defaultModel?: string;
+  defaultEffort?: string;
+  localPermission?: ChatMode;
+} {
+  return (usePluginConfigStore.getState().configsByPlugin[adapterId] || {}) as {
+    defaultModel?: string;
+    defaultEffort?: string;
+    localPermission?: ChatMode;
+  };
 }
 
 function normalizeChatState(raw: Record<string, unknown>, ctx: DeskClientContext<PaneChatConfig>): ChatTabState {
-  const agyCfg = getAgyDefaults();
-  const modeRaw = (raw.mode as ChatMode | undefined) || agyCfg.localPermission || 'turbo';
+  const adapterId =
+    typeof raw.adapterId === 'string' && raw.adapterId ? raw.adapterId : BUILTIN_PLUGIN_IDS.AGENT_AGY;
+  const adapterCfg = getAdapterDefaults(adapterId);
+  const modeRaw = (raw.mode as ChatMode | undefined) || adapterCfg.localPermission || 'turbo';
   const validModes: readonly ChatMode[] = ['turbo', 'auto', 'accept-edits', 'plan', 'strict'];
   const mode: ChatMode = validModes.includes(modeRaw) ? modeRaw : 'turbo';
   const externalSessionId =
@@ -53,17 +69,17 @@ function normalizeChatState(raw: Record<string, unknown>, ctx: DeskClientContext
     ? raw.addDirs.filter((d): d is string => typeof d === 'string' && d.trim().length > 0)
     : undefined;
 
-  const model = typeof raw.model === 'string' && raw.model ? raw.model : agyCfg.defaultModel || 'default';
+  const model = typeof raw.model === 'string' && raw.model ? raw.model : adapterCfg.defaultModel || 'default';
   const modelHasEmbeddedTier = /-(low|medium|high|xhigh|max)$/i.test(model);
   const effort = modelHasEmbeddedTier
     ? 'default'
     : typeof raw.effort === 'string' && raw.effort
       ? raw.effort
-      : agyCfg.defaultEffort || 'default';
+      : adapterCfg.defaultEffort || 'default';
 
   return {
     sessionId: typeof raw.sessionId === 'string' && raw.sessionId ? raw.sessionId : uid('sess'),
-    adapterId: typeof raw.adapterId === 'string' && raw.adapterId ? raw.adapterId : BUILTIN_PLUGIN_IDS.AGENT_AGY,
+    adapterId,
     externalSessionId,
     agyConversationId: externalSessionId,
     cwd: typeof raw.cwd === 'string' && raw.cwd ? raw.cwd : getDefaultCwd(ctx),
@@ -81,7 +97,6 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
   activate(ctx: DeskClientContext<PaneChatConfig>) {
     const store = useChatSessionStore.getState();
 
-    // Wire store callbacks to kernel RPC & layoutStore cleanly
     store.setCallbacks({
       invokeRpc: (method, payload) => ctx.rpc.invoke(method, payload),
       getPendingMessageMode: () => ctx.config.get().pendingMessageMode || 'queue',
@@ -98,7 +113,13 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
       updateTabTitleIfDefault: (groupId, tabId, prompt) => {
         const grp = useLayoutStore.getState().groups[groupId];
         const tab = grp?.tabs.find((t) => t.id === tabId);
-        if (tab && (tab.title === '새 채팅' || tab.title === '새 대화' || tab.title === '메인 채팅')) {
+        if (
+          tab &&
+          (tab.title === '새 채팅' ||
+            tab.title === '새 대화' ||
+            tab.title === '메인 채팅' ||
+            tab.title.startsWith('새 채팅 ('))
+        ) {
           const shortTitle = prompt.length > 26 ? prompt.slice(0, 26) + '…' : prompt;
           useLayoutStore.getState().updateTabMeta(groupId, tabId, { title: shortTitle });
         }
@@ -132,33 +153,53 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
       useChatSessionStore.getState().setCallbacks(null);
     }, 'pane-chat:store-callbacks');
 
-    // Track agent-adapter availability reactively
-    useChatSessionStore.getState().setAdapterAvailable(ctx.services.getAll('agent-adapter').length > 0);
-    ctx.services.whenAvailable('agent-adapter', () => {
-      useChatSessionStore.getState().setAdapterAvailable(true);
-      void useChatSessionStore.getState().refreshAccountQuota(false);
-      void useChatSessionStore.getState().refreshModels(false);
+    // Reactively sync all active agent-adapter plugins (`agent-agy`, `agent-claude`, `agent-codex`, ...)
+    const syncAdapters = () => {
+      const list = ctx.services
+        .getAll<ClientAgentAdapterDescriptor>('agent-adapter')
+        .map((e) => e.impl)
+        .filter((d): d is ClientAgentAdapterDescriptor => Boolean(d && d.id));
+      const order: Record<string, number> = {
+        'agent-agy': 1,
+        'agent-claude': 2,
+        'agent-codex': 3,
+      };
+      list.sort((a, b) => (order[a.id] ?? 99) - (order[b.id] ?? 99));
+      useChatSessionStore.getState().setAvailableAdapters(list);
+      return list;
+    };
+
+    syncAdapters();
+    ctx.services.whenAvailable<ClientAgentAdapterDescriptor>('agent-adapter', (desc) => {
+      syncAdapters();
+      if (desc?.id === 'agent-agy') {
+        void useChatSessionStore.getState().refreshAccountQuota(false, desc.id);
+      }
+      if (desc?.id) {
+        void useChatSessionStore.getState().refreshModels(false, desc.id);
+      }
       return () => {
-        useChatSessionStore.getState().setAdapterAvailable(ctx.services.getAll('agent-adapter').length > 0);
+        syncAdapters();
       };
     });
 
-    // Subscribe directly to agent-agy event bus streams (metrics + streaming + quota)
-    ctx.bus.subscribe<AgyEvent>(AGY_BUS.EVENT, (env) => {
+    // Unified cross-adapter Event Bus subscription (`agent:event` + `agent:quota.updated`)
+    ctx.bus.subscribe<AgentEvent>(AGENT_BUS.EVENT, (env) => {
       if (env.payload) {
-        useChatSessionStore.getState().handleAgyEvent(env.payload);
+        useChatSessionStore.getState().handleAgentEvent(env.payload);
       }
     });
-    ctx.bus.subscribe<AccountQuotaSnapshot>(AGY_BUS.QUOTA_UPDATED, (env) => {
-      if (env.payload) {
-        useChatSessionStore.getState().setAccountQuota(env.payload);
+    ctx.bus.subscribe<AgentQuotaBusPayload>(AGENT_BUS.QUOTA_UPDATED, (env) => {
+      if (env.payload?.snapshot) {
+        useChatSessionStore.getState().setAccountQuota(env.payload.snapshot, env.payload.adapterId);
       }
     });
 
     // Provide lightweight telemetry service for decoupled widgets (`hud-token-bar`, etc.)
     ctx.services.provide('chat:telemetry', {
       useChatSessionStore,
-      refreshQuota: (force?: boolean) => useChatSessionStore.getState().refreshAccountQuota(force),
+      refreshQuota: (force?: boolean, adapterId?: string) =>
+        useChatSessionStore.getState().refreshAccountQuota(force, adapterId),
       sendPromptToTab: (groupId: string, tabId: string, state: ChatTabState, prompt: string) =>
         useChatSessionStore.getState().sendPrompt(groupId, tabId, state, prompt),
     });
@@ -169,20 +210,34 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
 
     const ChatTabBadge: React.FC<{ tab: PaneTabRecord<ChatTabState>; active: boolean }> = ({ tab }) => {
       const running = useChatSessionStore((s) => Boolean(s.runningSessions[tab.state?.sessionId]));
-      if (!running) return null;
-      return (
-        <span
-          className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0"
-          style={{ background: 'var(--accent)' }}
-          title="응답 생성 중"
-        />
-      );
+      const adapterId = tab.state?.adapterId || 'agent-agy';
+      const dotColor =
+        adapterId === 'agent-claude' ? '#d97706' : adapterId === 'agent-codex' ? '#10b981' : 'var(--accent)';
+      if (running) {
+        return (
+          <span
+            className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0"
+            style={{ background: dotColor }}
+            title="응답 생성 중"
+          />
+        );
+      }
+      if (adapterId === 'agent-claude' || adapterId === 'agent-codex') {
+        return (
+          <span
+            className="w-1.5 h-1.5 rounded-full shrink-0 opacity-75"
+            style={{ background: dotColor }}
+            title={adapterId === 'agent-claude' ? 'Claude Code' : 'Codex (짚)'}
+          />
+        );
+      }
+      return null;
     };
 
     ctx.panes.registerType<ChatTabState>({
       type: 'chat',
-      label: '새 채팅 (agy)',
-      description: '독립 에이전트 대화 시작',
+      label: '새 채팅 (반중력·Claude·Codex)',
+      description: '반중력 · Claude Code · Codex(짚) 멀티 엔진 대화',
       icon: MessageSquare,
       accentColor: '#3b82f6',
       shortcut: '⌘N',
@@ -213,8 +268,14 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
       migrateState: (raw) => normalizeChatState(raw, ctx),
       matchOmnibox: (query) => {
         const q = query.trim().toLowerCase();
-        if (q === 'chat' || q === '채팅' || q === 'agy') {
-          return { score: 100, label: '새 채팅 (agy)', init: {} };
+        if (q === 'claude' || q === '클로드') {
+          return { score: 110, label: '새 채팅 (Claude Code)', init: { adapterId: 'agent-claude' } };
+        }
+        if (q === 'codex' || q === '짚' || q === 'gpt') {
+          return { score: 110, label: '새 채팅 (Codex · 짚)', init: { adapterId: 'agent-codex' } };
+        }
+        if (q === 'chat' || q === '채팅' || q === 'agy' || q === '반중력') {
+          return { score: 100, label: '새 채팅 (반중력)', init: { adapterId: 'agent-agy' } };
         }
         return null;
       },
@@ -230,9 +291,10 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
       onTabDispose: async (tab) => {
         const sid = tab.state?.sessionId;
         if (!sid) return;
+        const adapterId = tab.state?.adapterId || 'agent-agy';
         try {
-          await ctx.rpc.invoke(AGY_RPC.SESSIONS_UNWATCH, { tabSessionId: sid });
-          await ctx.rpc.invoke(AGY_RPC.PROMPT_CANCEL, { tabSessionId: sid });
+          await ctx.rpc.invoke(agentRpc(adapterId, 'sessions.unwatch'), { tabSessionId: sid });
+          await ctx.rpc.invoke(agentRpc(adapterId, 'prompt.cancel'), { tabSessionId: sid });
         } catch {
           // ignore if adapter disabled
         }
@@ -242,7 +304,6 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
       Component: BoundChatPane,
     });
 
-    // Commands
     ctx.commands.register({
       id: 'pane-chat:new-chat',
       title: '새 채팅 탭',
@@ -254,14 +315,33 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
     });
 
     ctx.commands.register({
+      id: 'pane-chat:new-claude-chat',
+      title: '새 Claude Code 채팅 탭',
+      run: (args) => {
+        const init = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+        ctx.workspace.openTab('chat', { ...init, adapterId: BUILTIN_PLUGIN_IDS.AGENT_CLAUDE });
+      },
+    });
+
+    ctx.commands.register({
+      id: 'pane-chat:new-codex-chat',
+      title: '새 Codex(짚) 채팅 탭',
+      run: (args) => {
+        const init = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+        ctx.workspace.openTab('chat', { ...init, adapterId: BUILTIN_PLUGIN_IDS.AGENT_CODEX });
+      },
+    });
+
+    ctx.commands.register({
       id: 'pane-chat:send-prompt',
       title: '채팅 프롬프트 전송',
       run: async (args) => {
         const req = args as { groupId?: string; tabId?: string; prompt?: string } | undefined;
         if (!req?.prompt) return;
-        const focused = req.groupId && req.tabId
-          ? { groupId: req.groupId, tab: useLayoutStore.getState().groups[req.groupId]?.tabs.find((t) => t.id === req.tabId) }
-          : ctx.workspace.getFocusedTab();
+        const focused =
+          req.groupId && req.tabId
+            ? { groupId: req.groupId, tab: useLayoutStore.getState().groups[req.groupId]?.tabs.find((t) => t.id === req.tabId) }
+            : ctx.workspace.getFocusedTab();
         if (!focused?.tab || focused.tab.paneType !== 'chat') return;
         await useChatSessionStore
           .getState()
@@ -276,9 +356,9 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
         const req = args as { summary: SessionSummary; split?: boolean | SplitDir; targetGroupId?: string } | undefined;
         if (!req?.summary) return;
         const { summary, split = false, targetGroupId } = req;
+        const adapterId = summary.adapterId || BUILTIN_PLUGIN_IDS.AGENT_AGY;
 
         const layout = useLayoutStore.getState();
-        // Focus existing tab if already open
         for (const grp of Object.values(layout.groups)) {
           const existing = grp.tabs.find(
             (t) =>
@@ -294,8 +374,10 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
 
         const init: Record<string, unknown> = {
           title: summary.title,
+          adapterId,
           externalSessionId: summary.conversationId,
           agyConversationId: summary.conversationId,
+          ...(summary.cwd ? { cwd: summary.cwd } : {}),
           projectLabel: summary.projectLabel || undefined,
           model: summary.model || 'default',
           source: summary.source,
@@ -318,7 +400,6 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
           }
         }
 
-        // Pre-hydrate messages & metrics immediately
         if (openedTabId) {
           const nextState = useLayoutStore.getState();
           let sessionId: string | null = null;
@@ -331,7 +412,7 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
           }
           if (sessionId) {
             try {
-              const loaded = await ctx.rpc.invoke<AgyLoadedSession>(AGY_RPC.SESSIONS_LOAD, {
+              const loaded = await ctx.rpc.invoke<AgentLoadedSession>(agentRpc(adapterId, 'sessions.load'), {
                 conversationId: summary.conversationId,
               });
               if (loaded) {
@@ -345,7 +426,6 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
       },
     });
 
-    // Settings section (declarative schema — automatically indexed by ⌘F global search)
     ctx.slots.register('settings.section', {
       id: 'pane-chat-settings',
       group: '일반 · 입력',

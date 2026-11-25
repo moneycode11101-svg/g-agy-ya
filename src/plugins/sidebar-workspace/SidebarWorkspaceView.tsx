@@ -12,15 +12,31 @@ import {
   Trash2,
 } from 'lucide-react';
 import {
+  BUILTIN_PLUGIN_IDS,
   useLayoutStore,
   type DeskClientContext,
   type SplitDir,
 } from '../../kernel/client';
-import type { AgyEvent, SessionSummary } from '../../shared/types';
+import {
+  AGENT_BUS,
+  agentRpc,
+  type ClientAgentAdapterDescriptor,
+} from '../../shared/agentProtocol';
+import type { AgentEvent, SessionSummary } from '../../shared/types';
 import { fmtAgo } from '../../utils/formatKo';
-import { AGY_BUS, AGY_RPC } from '../agent-agy/types';
+import { AGY_BUS } from '../agent-agy/types';
 import type { ChatTabState } from '../pane-chat/chatStore';
 import type { SidebarWorkspaceConfig } from './manifest';
+
+function adapterBadgeMeta(adapterId?: string): { label: string; color: string } {
+  if (adapterId === BUILTIN_PLUGIN_IDS.AGENT_CLAUDE) {
+    return { label: 'Claude', color: '#d97706' };
+  }
+  if (adapterId === BUILTIN_PLUGIN_IDS.AGENT_CODEX) {
+    return { label: 'Codex', color: '#10b981' };
+  }
+  return { label: 'agy', color: 'var(--accent)' };
+}
 
 export interface SidebarWorkspaceViewProps {
   ctx: DeskClientContext<SidebarWorkspaceConfig>;
@@ -43,26 +59,72 @@ export const SidebarWorkspaceView: React.FC<SidebarWorkspaceViewProps> = ({ ctx 
   const refreshSessions = useCallback(async () => {
     setLoadingSessions(true);
     try {
-      const list = await ctx.rpc.invoke<SessionSummary[]>(AGY_RPC.SESSIONS_LIST, { limit: sessionLimit });
-      if (Array.isArray(list)) setRecentSessions(list);
+      const descriptors = ctx.services
+        .getAll<ClientAgentAdapterDescriptor>('agent-adapter')
+        .map((e) => e.impl)
+        .filter((d): d is ClientAgentAdapterDescriptor => Boolean(d && d.id && d.capabilities?.sessionHistory));
+
+      const adapterIds =
+        descriptors.length > 0 ? descriptors.map((d) => d.id) : [BUILTIN_PLUGIN_IDS.AGENT_AGY];
+
+      const perAdapterLimit = Math.max(12, Math.ceil(sessionLimit / Math.max(1, adapterIds.length)) + 8);
+      const settled = await Promise.allSettled(
+        adapterIds.map(async (adapterId) => {
+          const list = await ctx.rpc.invoke<SessionSummary[]>(agentRpc(adapterId, 'sessions.list'), {
+            limit: perAdapterLimit,
+          });
+          if (!Array.isArray(list)) return [];
+          return list.map((s) => ({ ...s, adapterId: s.adapterId || adapterId }));
+        })
+      );
+
+      const seen = new Set<string>();
+      const merged: SessionSummary[] = [];
+      for (const r of settled) {
+        if (r.status !== 'fulfilled') continue;
+        for (const item of r.value) {
+          const key = `${item.adapterId || BUILTIN_PLUGIN_IDS.AGENT_AGY}:${item.conversationId}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(item);
+        }
+      }
+      merged.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      setRecentSessions(merged.slice(0, sessionLimit));
     } catch {
-      // agent-agy may be disabled; keep UI intact
+      // keep UI intact if adapters are temporarily unavailable
     } finally {
       setLoadingSessions(false);
     }
-  }, [ctx.rpc, sessionLimit]);
+  }, [ctx.rpc, ctx.services, sessionLimit]);
 
   useEffect(() => {
     void refreshSessions();
-    const unsub = ctx.bus.subscribe<AgyEvent>(AGY_BUS.EVENT, (env) => {
+    const unsubAgent = ctx.bus.subscribe<AgentEvent>(AGENT_BUS.EVENT, (env) => {
       if (env.payload?.type === 'done') {
         void refreshSessions();
       }
     });
+    const unsubAgy = ctx.bus.subscribe<AgentEvent>(AGY_BUS.EVENT, (env) => {
+      if (env.payload?.type === 'done') {
+        void refreshSessions();
+      }
+    });
+    const unsubServices = ctx.services.whenAvailable<ClientAgentAdapterDescriptor>(
+      'agent-adapter',
+      () => {
+        void refreshSessions();
+        return () => {
+          void refreshSessions();
+        };
+      }
+    );
     return () => {
-      void unsub();
+      void unsubAgent();
+      void unsubAgy();
+      unsubServices();
     };
-  }, [ctx.bus, refreshSessions]);
+  }, [ctx.bus, ctx.services, refreshSessions]);
 
   const focusedGroup = groups[focusedGroupId];
   const activeTab = focusedGroup?.tabs.find((t) => t.id === focusedGroup.activeTabId);
@@ -117,10 +179,13 @@ export const SidebarWorkspaceView: React.FC<SidebarWorkspaceViewProps> = ({ ctx 
   };
 
   const renderSessionRow = (sess: SessionSummary) => {
-    const isSelected = activeConvId === sess.conversationId;
+    const sessAdapter = sess.adapterId || BUILTIN_PLUGIN_IDS.AGENT_AGY;
+    const activeAdapter = activeChatState?.adapterId || BUILTIN_PLUGIN_IDS.AGENT_AGY;
+    const isSelected = activeConvId === sess.conversationId && activeAdapter === sessAdapter;
+    const badge = adapterBadgeMeta(sessAdapter);
     return (
       <div
-        key={sess.conversationId}
+        key={`${sessAdapter}:${sess.conversationId}`}
         onClick={() => openSession(sess, false)}
         onContextMenu={(e) => {
           e.preventDefault();
@@ -170,9 +235,16 @@ export const SidebarWorkspaceView: React.FC<SidebarWorkspaceViewProps> = ({ ctx 
           background: isSelected ? 'var(--surface-active)' : undefined,
           color: isSelected ? 'var(--fg)' : 'var(--fg-soft)',
         }}
-        title={sess.title}
+        title={`[${badge.label}] ${sess.title}`}
       >
-        <span className={`truncate text-[13px] ${isSelected ? 'font-medium' : ''}`}>{sess.title}</span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className="w-1.5 h-1.5 rounded-full shrink-0"
+            style={{ background: badge.color }}
+            title={badge.label}
+          />
+          <span className={`truncate text-[13px] ${isSelected ? 'font-medium' : ''}`}>{sess.title}</span>
+        </div>
 
         <div className="flex items-center shrink-0">
           <span className="text-[11px] num group-hover:hidden" style={{ color: 'var(--muted)' }}>

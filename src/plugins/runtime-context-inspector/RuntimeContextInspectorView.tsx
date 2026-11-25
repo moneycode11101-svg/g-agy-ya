@@ -19,7 +19,8 @@ import {
   type RuntimeContextAsset,
 } from '../../kernel/client';
 import { fmtKo } from '../../utils/formatKo';
-import { AGY_BUS, AGY_RPC } from '../agent-agy/types';
+import { AGENT_BUS, agentRpc } from '../../shared/agentProtocol';
+import { AGY_BUS } from '../agent-agy/types';
 import type { RuntimeContextInspectorConfig } from './manifest';
 
 const CONTROL_MODE_META: Record<
@@ -79,12 +80,14 @@ const KIND_TABS: Array<{ id: 'all' | RuntimeAssetKind; label: string }> = [
 export interface RuntimeContextInspectorViewProps {
   ctx: DeskClientContext<RuntimeContextInspectorConfig>;
   cwdOverride?: string;
+  adapterIdOverride?: string;
   compact?: boolean;
 }
 
 export const RuntimeContextInspectorView: React.FC<RuntimeContextInspectorViewProps> = ({
   ctx,
   cwdOverride,
+  adapterIdOverride,
   compact = false,
 }) => {
   const cfg = ctx.config.useConfig();
@@ -105,12 +108,22 @@ export const RuntimeContextInspectorView: React.FC<RuntimeContextInspectorViewPr
     return typeof cwd === 'string' && cwd ? cwd : undefined;
   }, [cwdOverride, focusedGroupId, groups]);
 
-  const [selectedAdapterId, setSelectedAdapterId] = useState<string>(BUILTIN_PLUGIN_IDS.AGENT_AGY);
-  const [cwdProjection, setCwdProjection] = useState<RuntimeAssetsProjection | null>(null);
+  const [selectedAdapterId, setSelectedAdapterId] = useState<string>(
+    adapterIdOverride || BUILTIN_PLUGIN_IDS.AGENT_AGY
+  );
+  const [cwdProjectionByAdapter, setCwdProjectionByAdapter] = useState<
+    Record<string, RuntimeAssetsProjection>
+  >({});
   const [kindFilter, setKindFilter] = useState<'all' | RuntimeAssetKind>('all');
   const [query, setQuery] = useState('');
   const [busyAssetId, setBusyAssetId] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
+
+  useEffect(() => {
+    if (adapterIdOverride) {
+      setSelectedAdapterId(adapterIdOverride);
+    }
+  }, [adapterIdOverride]);
 
   useEffect(() => {
     const release = acquireLive();
@@ -121,14 +134,24 @@ export const RuntimeContextInspectorView: React.FC<RuntimeContextInspectorViewPr
     async (cwd?: string) => {
       setRescanning(true);
       try {
-        if (selectedAdapterId === BUILTIN_PLUGIN_IDS.AGENT_AGY) {
-          const proj = await ctx.rpc.invoke<RuntimeAssetsProjection>(AGY_RPC.ASSETS_SCAN, { cwd });
-          if (proj) setCwdProjection(proj);
+        const proj = await ctx.rpc.invoke<RuntimeAssetsProjection>(
+          agentRpc(selectedAdapterId, 'assets.scan'),
+          { cwd }
+        );
+        if (proj) {
+          setCwdProjectionByAdapter((prev) => ({
+            ...prev,
+            [proj.adapterPluginId || selectedAdapterId]: proj,
+          }));
         } else {
           await sendCommand({ type: 'runtime-asset:rescan', adapterPluginId: selectedAdapterId });
         }
       } catch {
-        // fallback to introspection snapshot
+        try {
+          await sendCommand({ type: 'runtime-asset:rescan', adapterPluginId: selectedAdapterId });
+        } catch {
+          // fallback to introspection snapshot
+        }
       } finally {
         setRescanning(false);
       }
@@ -141,27 +164,41 @@ export const RuntimeContextInspectorView: React.FC<RuntimeContextInspectorViewPr
   }, [focusedCwd, scanForCwd]);
 
   useEffect(() => {
-    const unsub = ctx.bus.subscribe<RuntimeAssetsProjection>(AGY_BUS.ASSETS_UPDATED, (env) => {
-      if (env.payload) setCwdProjection(env.payload);
+    const onProj = (proj: RuntimeAssetsProjection | undefined) => {
+      if (!proj?.adapterPluginId) return;
+      setCwdProjectionByAdapter((prev) => ({
+        ...prev,
+        [proj.adapterPluginId]: proj,
+      }));
+    };
+    const unsubAgent = ctx.bus.subscribe<RuntimeAssetsProjection>(AGENT_BUS.ASSETS_UPDATED, (env) => {
+      onProj(env.payload);
+    });
+    const unsubAgy = ctx.bus.subscribe<RuntimeAssetsProjection>(AGY_BUS.ASSETS_UPDATED, (env) => {
+      onProj(env.payload);
     });
     return () => {
-      void unsub();
+      void unsubAgent();
+      void unsubAgy();
     };
   }, [ctx.bus]);
 
   const adapters = useMemo(() => {
-    const map = snapshot?.runtimeAssetsByAdapter || {};
-    const list = Object.values(map);
-    if (list.length === 0 && cwdProjection) return [cwdProjection];
-    return list;
-  }, [cwdProjection, snapshot?.runtimeAssetsByAdapter]);
+    const merged: Record<string, RuntimeAssetsProjection> = {
+      ...(snapshot?.runtimeAssetsByAdapter || {}),
+      ...cwdProjectionByAdapter,
+    };
+    return Object.values(merged).sort((a, b) => a.adapterPluginId.localeCompare(b.adapterPluginId));
+  }, [cwdProjectionByAdapter, snapshot?.runtimeAssetsByAdapter]);
 
   const projection: RuntimeAssetsProjection | null = useMemo(() => {
-    if (selectedAdapterId === BUILTIN_PLUGIN_IDS.AGENT_AGY && cwdProjection) {
-      return cwdProjection;
-    }
-    return snapshot?.runtimeAssetsByAdapter?.[selectedAdapterId] || adapters[0] || null;
-  }, [adapters, cwdProjection, selectedAdapterId, snapshot?.runtimeAssetsByAdapter]);
+    return (
+      cwdProjectionByAdapter[selectedAdapterId] ||
+      snapshot?.runtimeAssetsByAdapter?.[selectedAdapterId] ||
+      adapters[0] ||
+      null
+    );
+  }, [adapters, cwdProjectionByAdapter, selectedAdapterId, snapshot?.runtimeAssetsByAdapter]);
 
   const assets = projection?.assets || [];
   const symlinkCount = useMemo(() => assets.filter((a) => a.isSymlink).length, [assets]);
@@ -241,7 +278,13 @@ export const RuntimeContextInspectorView: React.FC<RuntimeContextInspectorViewPr
               {projection?.adapterLabel || '에이전트 런타임 자산'}
             </div>
             <div className="text-[11px] font-mono truncate" style={{ color: 'var(--muted)' }}>
-              {focusedCwd ? `기준 워크스페이스: ${focusedCwd}` : '전역 ~/.gemini/config 기준'}
+              {focusedCwd
+                ? `기준 워크스페이스: ${focusedCwd}`
+                : selectedAdapterId === BUILTIN_PLUGIN_IDS.AGENT_CLAUDE
+                  ? '전역 ~/.claude 기준'
+                  : selectedAdapterId === BUILTIN_PLUGIN_IDS.AGENT_CODEX
+                    ? '전역 CODEX_HOME (~/.codex) 기준'
+                    : '전역 ~/.gemini/config 기준'}
             </div>
           </div>
         </div>
@@ -354,9 +397,21 @@ export const RuntimeContextInspectorView: React.FC<RuntimeContextInspectorViewPr
         >
           <AlertTriangle size={13} style={{ color: 'var(--warn)' }} className="shrink-0 mt-0.5" />
           <span>
-            <strong>agy CLI 제어 경계</strong>: 플러그인 번들({pluginBundles.length}개)과 전역 MCP는{' '}
-            <code>agy plugin/mcp enable|disable</code>로 <strong>전역 제어</strong>되며, 개별 스킬·워크스페이스 규칙은 CLI
-            제약상 읽기 전용(부모 플러그인 단위로 토글)입니다.
+            {selectedAdapterId === BUILTIN_PLUGIN_IDS.AGENT_CLAUDE ? (
+              <>
+                <strong>Claude Code 런타임 경계</strong>: <code>~/.claude</code> 및 워크스페이스 <code>CLAUDE.md</code>·<code>.mcp.json</code>·<code>rules/</code>·<code>skills/</code>를 읽기 전용으로 스캔합니다.
+              </>
+            ) : selectedAdapterId === BUILTIN_PLUGIN_IDS.AGENT_CODEX ? (
+              <>
+                <strong>Codex CLI 런타임 경계</strong>: <code>CODEX_HOME</code>의 <code>AGENTS.md</code>·<code>config.toml</code> MCP·<code>skills/</code>·<code>hooks.json</code>을 읽기 전용으로 스캔합니다.
+              </>
+            ) : (
+              <>
+                <strong>agy CLI 제어 경계</strong>: 플러그인 번들({pluginBundles.length}개)과 전역 MCP는{' '}
+                <code>agy plugin/mcp enable|disable</code>로 <strong>전역 제어</strong>되며, 개별 스킬·워크스페이스 규칙은 CLI
+                제약상 읽기 전용(부모 플러그인 단위로 토글)입니다.
+              </>
+            )}
           </span>
         </div>
       </div>

@@ -30,7 +30,11 @@ export const PANE_CHAT_MANIFEST: PluginManifest = {
     host: 'builtin:pane-chat/host',
     client: 'builtin:pane-chat/client',
   },
-  optionalRequires: [BUILTIN_PLUGIN_IDS.AGENT_AGY],
+  optionalRequires: [
+    BUILTIN_PLUGIN_IDS.AGENT_AGY,
+    BUILTIN_PLUGIN_IDS.AGENT_CLAUDE,
+    BUILTIN_PLUGIN_IDS.AGENT_CODEX,
+  ],
   provides: ['pane:chat', `widget-anchor:${PANE_WIDGET_ANCHORS.CHAT_ABOVE_COMPOSER}`, `widget-anchor:${PANE_WIDGET_ANCHORS.CHAT_COMPOSER_BADGE}`],
   capabilities: [],
   configSchema: [

@@ -20,7 +20,12 @@ export const SIDEBAR_WORKSPACE_MANIFEST: PluginManifest = {
     host: 'builtin:sidebar-workspace/host',
     client: 'builtin:sidebar-workspace/client',
   },
-  optionalRequires: [BUILTIN_PLUGIN_IDS.AGENT_AGY, BUILTIN_PLUGIN_IDS.PANE_CHAT],
+  optionalRequires: [
+    BUILTIN_PLUGIN_IDS.AGENT_AGY,
+    BUILTIN_PLUGIN_IDS.AGENT_CLAUDE,
+    BUILTIN_PLUGIN_IDS.AGENT_CODEX,
+    BUILTIN_PLUGIN_IDS.PANE_CHAT,
+  ],
   capabilities: [],
   configSchema: [
     {

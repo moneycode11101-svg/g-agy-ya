@@ -178,8 +178,12 @@ export function groupModelsIntoFamilies(models: readonly AgyModelOption[]): Mode
 }
 
 /** Formats any model value into a concise Korean label for the composer pill */
-export function formatModelDisplayLabel(modelValue: string, models: readonly AgyModelOption[]): string {
-  if (!modelValue || modelValue === 'default') return '기본 모델 (agy)';
+export function formatModelDisplayLabel(
+  modelValue: string,
+  models: readonly AgyModelOption[],
+  adapterShortLabel = 'agy'
+): string {
+  if (!modelValue || modelValue === 'default') return `기본 모델 (${adapterShortLabel})`;
   const found = models.find((m) => m.value === modelValue);
   if (!found) return modelValue;
   const p = parseModelOption(found);
