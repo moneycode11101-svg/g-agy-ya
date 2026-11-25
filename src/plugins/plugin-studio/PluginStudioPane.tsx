@@ -181,6 +181,17 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
     return () => ro.disconnect();
   }, []);
 
+  useEffect(() => {
+    if (!selectedNodeId) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        selectNode(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedNodeId, selectNode]);
+
   const isCompact = paneWidth < compactBreakpoint;
 
   const setNodeRef = (id: string) => (el: HTMLElement | null) => {
@@ -663,8 +674,17 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
           </div>
         ) : (
           <>
-            {/* Scrollable Architecture Canvas */}
-            <div ref={canvasRef} className="flex-1 min-w-0 min-h-0 overflow-auto scroll-thin p-4 relative">
+            {/* Scrollable Architecture Canvas (빈 땅 클릭 시 선택 해제) */}
+            <div
+              ref={canvasRef}
+              onClick={(e) => {
+                if (!selectedNodeId) return;
+                const target = e.target as HTMLElement | null;
+                if (target?.closest('[data-studio-selectable="true"], button, input, select, textarea, a')) return;
+                selectNode(null);
+              }}
+              className="flex-1 min-w-0 min-h-0 overflow-auto scroll-thin p-4 relative"
+            >
               {!isCompact && (
                 <LiveEdgeSvgOverlay
                   containerRef={canvasRef}
@@ -697,7 +717,11 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
 
                   <div
                     ref={setNodeRef('__core__')}
-                    onClick={() => selectNode('__core__', 'overview')}
+                    data-studio-selectable="true"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      selectNode(selectedNodeId === '__core__' ? null : '__core__', 'overview');
+                    }}
                     className="rounded-2xl border p-3.5 space-y-3 cursor-pointer transition-all"
                     style={{
                       background: 'var(--card)',
@@ -811,7 +835,11 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
                               <div
                                 key={node.id}
                                 ref={setNodeRef(node.id)}
-                                onClick={() => selectNode(node.id)}
+                                data-studio-selectable="true"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  selectNode(isSelected ? null : node.id);
+                                }}
                                 onMouseEnter={() => {
                                   if (node.occupiedSlots.length > 0) pingPluginInUi(node.id, null);
                                 }}
