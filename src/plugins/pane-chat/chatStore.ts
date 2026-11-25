@@ -23,6 +23,7 @@ export interface ChatTabState extends Record<string, unknown> {
   externalSessionId: string | null;
   agyConversationId: string | null;
   cwd: string;
+  addDirs?: string[];
   projectLabel?: string;
   model: string;
   effort: string;
@@ -199,6 +200,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
         agyConversationId: convId,
         prompt: trimmed,
         cwd: state.cwd,
+        addDirs: state.addDirs,
         model: state.model,
         effort: state.effort,
         mode: state.mode,

@@ -33,7 +33,8 @@ function getAgyDefaults(): Partial<AgyPluginConfig> {
 function normalizeChatState(raw: Record<string, unknown>, ctx: DeskClientContext<PaneChatConfig>): ChatTabState {
   const agyCfg = getAgyDefaults();
   const modeRaw = (raw.mode as ChatMode | undefined) || agyCfg.localPermission || 'turbo';
-  const mode: ChatMode = modeRaw === 'auto' ? 'turbo' : modeRaw;
+  const validModes: readonly ChatMode[] = ['turbo', 'auto', 'accept-edits', 'plan', 'strict'];
+  const mode: ChatMode = validModes.includes(modeRaw) ? modeRaw : 'turbo';
   const externalSessionId =
     typeof raw.externalSessionId === 'string'
       ? raw.externalSessionId
@@ -48,6 +49,17 @@ function normalizeChatState(raw: Record<string, unknown>, ctx: DeskClientContext
         : typeof raw.prompt === 'string'
           ? raw.prompt
           : undefined;
+  const addDirs = Array.isArray(raw.addDirs)
+    ? raw.addDirs.filter((d): d is string => typeof d === 'string' && d.trim().length > 0)
+    : undefined;
+
+  const model = typeof raw.model === 'string' && raw.model ? raw.model : agyCfg.defaultModel || 'default';
+  const modelHasEmbeddedTier = /-(low|medium|high|xhigh|max)$/i.test(model);
+  const effort = modelHasEmbeddedTier
+    ? 'default'
+    : typeof raw.effort === 'string' && raw.effort
+      ? raw.effort
+      : agyCfg.defaultEffort || 'default';
 
   return {
     sessionId: typeof raw.sessionId === 'string' && raw.sessionId ? raw.sessionId : uid('sess'),
@@ -55,9 +67,10 @@ function normalizeChatState(raw: Record<string, unknown>, ctx: DeskClientContext
     externalSessionId,
     agyConversationId: externalSessionId,
     cwd: typeof raw.cwd === 'string' && raw.cwd ? raw.cwd : getDefaultCwd(ctx),
+    addDirs: addDirs && addDirs.length > 0 ? addDirs : undefined,
     projectLabel: typeof raw.projectLabel === 'string' ? raw.projectLabel : undefined,
-    model: typeof raw.model === 'string' && raw.model ? raw.model : agyCfg.defaultModel || 'default',
-    effort: typeof raw.effort === 'string' && raw.effort ? raw.effort : agyCfg.defaultEffort || 'default',
+    model,
+    effort,
     mode,
     source: raw.source === 'cli' || raw.source === 'app' || raw.source === 'new' ? raw.source : 'new',
     initialPrompt,
@@ -171,7 +184,14 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
       duplicateState: (src) => {
         const s = src.state;
         const next = normalizeChatState(
-          { cwd: s.cwd, model: s.model, effort: s.effort, mode: s.mode, adapterId: s.adapterId },
+          {
+            cwd: s.cwd,
+            addDirs: s.addDirs,
+            model: s.model,
+            effort: s.effort,
+            mode: s.mode,
+            adapterId: s.adapterId,
+          },
           ctx
         );
         return { title: '새 채팅', state: next };

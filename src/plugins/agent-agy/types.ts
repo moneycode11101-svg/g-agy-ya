@@ -26,6 +26,7 @@ export interface AgySendPromptRequest {
   agyConversationId: string | null;
   prompt: string;
   cwd: string;
+  addDirs?: string[];
   model: string;
   effort: string;
   mode: ChatMode;
@@ -62,12 +63,33 @@ export interface AgyAgentAdapterHostService {
 }
 
 export const FALLBACK_AGY_MODELS: AgyModelOption[] = [
-  { value: 'default', label: 'Gemini 4 Neon 기본' },
-  { value: 'gemini-4-neon-medium', label: 'Gemini 4 Neon 보통' },
-  { value: 'gemini-4-neon-high', label: 'Gemini 4 Neon 높음' },
-  { value: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon 매우 높음' },
-  { value: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5' },
-  { value: 'claude-opus-5-5-high', label: 'Claude Opus 5.5' },
+  { value: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)' },
+  { value: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' },
+  { value: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)' },
+  { value: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)' },
+  { value: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' },
+  { value: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)' },
+  { value: 'gemini-4-carbon-low', label: 'Gemini 4 Carbon (Low)' },
+  { value: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+  { value: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
+  { value: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
+  { value: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)' },
+  { value: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+  { value: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)' },
+  { value: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
+  { value: 'gemini-pro-orchestrator-neon', label: 'Orchestrator (Neon)' },
+  { value: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
+  { value: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)' },
+  { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+  { value: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
+  { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
+  { value: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)' },
+  { value: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)' },
+  { value: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)' },
+  { value: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
+  { value: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)' },
+  { value: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)' },
+  { value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
 ];
 
 export const AGY_RPC = {

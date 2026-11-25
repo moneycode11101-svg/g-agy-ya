@@ -2,18 +2,25 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
+  BarChart3,
+  Check,
   ChevronDown,
   ChevronRight,
   Columns2,
   Copy,
   FolderOpen,
+  FolderPlus,
   Globe,
+  ImagePlus,
   KeyRound,
   MessageSquare,
   Minimize2,
+  Paperclip,
   Plus,
+  RefreshCw,
   Rows2,
   Shield,
+  Sparkles,
   Square,
   Terminal,
   Trash2,
@@ -35,21 +42,28 @@ import { fmtAgo, fmtKo } from '../../utils/formatKo';
 import { AGY_RPC, type AgyLoadedSession } from '../agent-agy/types';
 import { useChatSessionStore, type ChatTabState } from './chatStore';
 import type { PaneChatConfig } from './manifest';
+import {
+  BUILTIN_SLASH_COMMANDS,
+  formatModelDisplayLabel,
+  groupModelsIntoFamilies,
+  type SlashCommandItem,
+} from './modelCatalog';
 import { renderSanitizedMarkdown } from './sanitizeMarkdown';
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_QUEUE: Array<{ prompt: string; images?: string[] }> = [];
 
-const EFFORT_OPTIONS = [
-  { value: 'default', label: '기본' },
-  { value: 'low', label: '낮음' },
-  { value: 'medium', label: '보통' },
-  { value: 'high', label: '높음' },
-  { value: 'xhigh', label: '매우 높음' },
-];
+const EFFORT_LABELS: Record<string, string> = {
+  low: '낮음',
+  medium: '보통',
+  high: '높음',
+  xhigh: '매우 높음',
+  max: '최대',
+};
 
 const MODE_OPTIONS: Array<{ value: ChatMode; label: string; desc: string }> = [
   { value: 'turbo', label: '터보', desc: '모든 도구 자동 실행' },
+  { value: 'auto', label: '자동', desc: '안전 기준 자동 승인' },
   { value: 'accept-edits', label: '편집 허용', desc: '파일 편집 자동 허용' },
   { value: 'plan', label: '계획', desc: '읽기·계획 전용' },
   { value: 'strict', label: '엄격', desc: '샌드박스 제한 실행' },
@@ -123,6 +137,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const errorText = useChatSessionStore((s) => s.errorsBySession[sessionId]);
   const adapterAvailable = useChatSessionStore((s) => s.adapterAvailable);
   const availableModels = useChatSessionStore((s) => s.availableModels);
+  const refreshModels = useChatSessionStore((s) => s.refreshModels);
   const sendPrompt = useChatSessionStore((s) => s.sendPrompt);
   const clearQueuedPrompts = useChatSessionStore((s) => s.clearQueuedPrompts);
   const cancelTurn = useChatSessionStore((s) => s.cancelTurn);
@@ -136,13 +151,21 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const closeSplitPane = useLayoutStore((s) => s.closeSplitPane);
   const registeredPaneTypes = useSlotRegistry((s) => s.paneTypes);
   const contextMenuContribs = useSlotRegistry((s) => s.bySlot['context-menu.item']);
+  const runtimeAssets = useIntrospectionStore(
+    (s) => s.snapshot?.runtimeAssetsByAdapter?.[BUILTIN_PLUGIN_IDS.AGENT_AGY]?.assets
+  );
 
   const [input, setInput] = useState(state.initialPrompt || '');
   const [authCode, setAuthCode] = useState('');
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
-  const [pendingSwitch, setPendingSwitch] = useState<{ field: 'model' | 'effort'; value: string } | null>(null);
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  const [activeFamilyId, setActiveFamilyId] = useState<string | null>(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [pendingSwitch, setPendingSwitch] = useState<{ patch: Partial<ChatTabState>; label: string } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -190,14 +213,20 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   }, [input]);
 
   useEffect(() => {
-    if (!modelMenuOpen && !modeMenuOpen) return;
+    setSlashDismissed(false);
+    setSlashIndex(0);
+  }, [input]);
+
+  useEffect(() => {
+    if (!modelMenuOpen && !modeMenuOpen && !plusMenuOpen) return;
     const onClick = () => {
       setModelMenuOpen(false);
       setModeMenuOpen(false);
+      setPlusMenuOpen(false);
     };
     window.addEventListener('click', onClick);
     return () => window.removeEventListener('click', onClick);
-  }, [modelMenuOpen, modeMenuOpen]);
+  }, [modelMenuOpen, modeMenuOpen, plusMenuOpen]);
 
   // Hydrate & fs.watch with proper cleanup (`unwatchSession`) + race guard (mandatory fix b)
   useEffect(() => {
@@ -233,24 +262,151 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
     };
   }, [adapterAvailable, ctx.rpc, externalSessionId, hydrateSession, sessionId, setSessionMetrics]);
 
+  const modelFamilies = useMemo(() => groupModelsIntoFamilies(availableModels), [availableModels]);
+  const activeModelFamily = useMemo(
+    () => modelFamilies.find((f) => f.variants.some((v) => v.value === state.model)) || null,
+    [modelFamilies, state.model]
+  );
+  const expandedFamily = useMemo(() => {
+    if (activeFamilyId) {
+      return modelFamilies.find((f) => f.id === activeFamilyId) || null;
+    }
+    return activeModelFamily;
+  }, [activeFamilyId, activeModelFamily, modelFamilies]);
+
+  const allSlashItems = useMemo<SlashCommandItem[]>(() => {
+    const items: SlashCommandItem[] = [...BUILTIN_SLASH_COMMANDS];
+    const seen = new Set(items.map((i) => i.command.toLowerCase()));
+    if (Array.isArray(runtimeAssets)) {
+      for (const asset of runtimeAssets) {
+        if (asset.kind !== 'skill' || !asset.enabled) continue;
+        const cmd = `/${asset.name}`;
+        if (seen.has(cmd.toLowerCase())) continue;
+        seen.add(cmd.toLowerCase());
+        items.push({
+          command: cmd,
+          description: asset.description || '설치된 agy 스킬',
+          category: '스킬',
+        });
+      }
+    }
+    return items;
+  }, [runtimeAssets]);
+
+  const slashMatch = useMemo(() => {
+    if (slashDismissed) return null;
+    const m = input.match(/^\/([^\s\n]*)$/);
+    return m ? m[1].toLowerCase() : null;
+  }, [input, slashDismissed]);
+
+  const filteredSlashItems = useMemo(() => {
+    if (slashMatch === null) return [];
+    if (!slashMatch) return allSlashItems;
+    return allSlashItems.filter(
+      (item) =>
+        item.command.toLowerCase().includes(slashMatch) ||
+        item.description.toLowerCase().includes(slashMatch)
+    );
+  }, [allSlashItems, slashMatch]);
+
+  const slashMenuOpen = slashMatch !== null && filteredSlashItems.length > 0;
+
+  const selectSlashItem = (item: SlashCommandItem) => {
+    setInput(`${item.command} `);
+    setSlashDismissed(true);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
   // Independent `warnOnCacheReset` — works even when `hud-token-bar` plugin is OFF (mandatory fix c)
-  const requestSwitch = (field: 'model' | 'effort', value: string) => {
+  const requestSwitchModel = (modelValue: string) => {
     setModelMenuOpen(false);
-    if (value === state[field]) return;
+    if (modelValue === state.model && (!state.effort || state.effort === 'default')) return;
+    const patch: Partial<ChatTabState> = { model: modelValue, effort: 'default' };
     const ctxTokens = metrics?.currentContext ?? 0;
     if (cfg.warnOnCacheReset !== false && ctxTokens > 5000) {
-      setPendingSwitch({ field, value });
+      setPendingSwitch({ patch, label: formatModelDisplayLabel(modelValue, availableModels) });
     } else {
-      updateState({ [field]: value } as Partial<ChatTabState>);
+      updateState(patch);
+    }
+  };
+
+  const handleRefreshModels = async () => {
+    setRefreshingModels(true);
+    try {
+      await refreshModels(true);
+    } finally {
+      setRefreshingModels(false);
     }
   };
 
   const handlePickCwd = async () => {
+    setPlusMenuOpen(false);
     try {
       const dir = await ctx.rpc.invoke<string | null>('pane-chat:pickDirectory');
       if (dir) updateState({ cwd: dir });
     } catch {
       // ignore
+    }
+  };
+
+  const handlePickFiles = async () => {
+    setPlusMenuOpen(false);
+    try {
+      const files = await ctx.rpc.invoke<string[]>('pane-chat:pickFiles');
+      if (Array.isArray(files) && files.length > 0) {
+        setAttachedImages((prev) => Array.from(new Set([...prev, ...files])));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleAddExtraDir = async () => {
+    setPlusMenuOpen(false);
+    try {
+      const dir = await ctx.rpc.invoke<string | null>('pane-chat:pickDirectory');
+      if (dir && dir !== state.cwd) {
+        const next = Array.from(new Set([...(state.addDirs || []), dir]));
+        updateState({ addDirs: next });
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleRemoveAddDir = (dir: string) => {
+    const next = (state.addDirs || []).filter((d) => d !== dir);
+    updateState({ addDirs: next.length > 0 ? next : undefined });
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItems = items.filter((it) => it.kind === 'file' && it.type.startsWith('image/'));
+    if (imageItems.length === 0) return;
+
+    const hasPlainText = items.some((it) => it.kind === 'string' && it.type === 'text/plain');
+    if (!hasPlainText) e.preventDefault();
+
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+        if (!dataUrl) return;
+        void ctx.rpc
+          .invoke<string | null>('pane-chat:saveClipboardImage', {
+            dataUrl,
+            ext: file.type.split('/')[1] || 'png',
+          })
+          .then((savedPath) => {
+            if (savedPath) {
+              setAttachedImages((prev) => Array.from(new Set([...prev, savedPath])));
+            }
+          })
+          .catch(() => {});
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -308,13 +464,15 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const colMaxWidthClass =
     cfg.chatWidth === 'wide' ? 'max-w-none' : cfg.chatWidth === 'medium' ? 'max-w-[900px]' : 'max-w-[740px]';
 
-  const currentModelLabel = availableModels.find((m) => m.value === state.model)?.label || state.model;
+  const currentModelLabel = formatModelDisplayLabel(state.model, availableModels);
+  const modelHasEmbeddedTier = Boolean(
+    state.model && state.model !== 'default' && /-(low|medium|high|xhigh|max)$/i.test(state.model)
+  );
   const currentEffortSuffix =
-    state.effort && state.effort !== 'default'
-      ? ` · ${EFFORT_OPTIONS.find((e) => e.value === state.effort)?.label || state.effort}`
+    !modelHasEmbeddedTier && state.effort && state.effort !== 'default'
+      ? ` · ${EFFORT_LABELS[state.effort] || state.effort}`
       : '';
-  const currentModeLabel =
-    MODE_OPTIONS.find((m) => m.value === state.mode)?.label || (state.mode === 'auto' ? '터보' : '터보');
+  const currentModeLabel = MODE_OPTIONS.find((m) => m.value === state.mode)?.label || '터보';
   const totalGroups = Object.keys(groups).length;
 
   const handlePaneContextMenu = (e: React.MouseEvent) => {
@@ -595,7 +753,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               <div className="flex items-center gap-2 min-w-0">
                 <AlertTriangle size={14} style={{ color: 'var(--warn)' }} className="shrink-0" />
                 <span className="truncate">
-                  {pendingSwitch.field === 'model' ? '모델' : 'Effort'}을 바꾸면 이 대화 캐시(
+                  모델을 <strong>{pendingSwitch.label}</strong>(으)로 바꾸면 이 대화 캐시(
                   <strong>{fmtKo(metrics?.currentContext)}</strong>)가 다음 전송 때 0%로 초기화됩니다.
                 </span>
               </div>
@@ -603,7 +761,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                 <button
                   type="button"
                   onClick={() => {
-                    updateState({ [pendingSwitch.field]: pendingSwitch.value } as Partial<ChatTabState>);
+                    updateState(pendingSwitch.patch);
                     setPendingSwitch(null);
                   }}
                   className="px-2.5 py-1 rounded-lg text-[11px] font-medium cursor-pointer"
@@ -687,26 +845,104 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
           {/* 플로팅 컴포저 카드 */}
           <form
             onSubmit={(e) => void handleSubmit(e)}
-            className="rounded-[22px] border px-4 pt-3 pb-2.5 transition-shadow"
+            className="relative rounded-[22px] border px-4 pt-3 pb-2.5 transition-shadow"
             style={{
               background: 'var(--card)',
               borderColor: 'var(--border-strong)',
               boxShadow: 'var(--shadow-composer)',
             }}
           >
-            {attachedImages.length > 0 && (
+            {/* 슬래시 명령어 · 설치된 스킬 자동완성 팝오버 */}
+            {slashMenuOpen && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="absolute bottom-full left-0 right-0 mb-2 rounded-2xl border p-1.5 z-50 max-h-64 overflow-y-auto scroll-thin"
+                style={{
+                  background: 'var(--card)',
+                  borderColor: 'var(--border)',
+                  boxShadow: 'var(--shadow-popover)',
+                }}
+              >
+                <div
+                  className="px-2.5 py-1 flex items-center justify-between text-[10.5px] font-semibold"
+                  style={{ color: 'var(--muted)' }}
+                >
+                  <span>슬래시 명령어 · 스킬</span>
+                  <span>↑↓ 선택 · Tab/Enter 입력 · Esc 닫기</span>
+                </div>
+                {filteredSlashItems.slice(0, 12).map((item, idx) => {
+                  const selected = idx === Math.min(slashIndex, Math.min(filteredSlashItems.length, 12) - 1);
+                  return (
+                    <button
+                      key={item.command}
+                      type="button"
+                      onMouseEnter={() => setSlashIndex(idx)}
+                      onClick={() => selectSlashItem(item)}
+                      className="w-full text-left px-2.5 py-1.5 rounded-xl flex items-center justify-between gap-3 text-xs cursor-pointer transition-colors"
+                      style={{
+                        background: selected ? 'var(--surface-active)' : undefined,
+                        color: 'var(--fg)',
+                      }}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        {item.category === '스킬' && (
+                          <Sparkles size={12} className="shrink-0" style={{ color: 'var(--accent)' }} />
+                        )}
+                        <span className="font-mono font-medium shrink-0">{item.command}</span>
+                        <span className="truncate text-[11.5px]" style={{ color: 'var(--muted)' }}>
+                          {item.description}
+                        </span>
+                      </div>
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded-md shrink-0"
+                        style={{ background: 'var(--surface)', color: 'var(--muted)' }}
+                      >
+                        {item.category}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {(attachedImages.length > 0 || (state.addDirs && state.addDirs.length > 0)) && (
               <div className="flex flex-wrap gap-1.5 mb-2">
+                {(state.addDirs || []).map((dir) => (
+                  <span
+                    key={`dir:${dir}`}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono"
+                    style={{
+                      background: 'color-mix(in srgb, var(--accent) 10%, var(--surface))',
+                      color: 'var(--fg-soft)',
+                    }}
+                    title={`추가 컨텍스트 폴더 (--add-dir): ${dir}`}
+                  >
+                    <FolderPlus size={11} style={{ color: 'var(--accent)' }} />
+                    <span>{dir.split('/').pop() || dir}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveAddDir(dir)}
+                      className="cursor-pointer opacity-60 hover:opacity-100 ml-0.5"
+                      title="추가 폴더 해제"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
                 {attachedImages.map((img) => (
                   <span
                     key={img}
                     className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-mono"
                     style={{ background: 'var(--surface)', color: 'var(--fg-soft)' }}
+                    title={img}
                   >
-                    {img.split('/').pop()}
+                    <Paperclip size={10} style={{ color: 'var(--muted)' }} />
+                    <span>{img.split('/').pop()}</span>
                     <button
                       type="button"
                       onClick={() => setAttachedImages((prev) => prev.filter((x) => x !== img))}
                       className="cursor-pointer opacity-60 hover:opacity-100"
+                      title="첨부 제거"
                     >
                       ✕
                     </button>
@@ -720,7 +956,34 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               rows={1}
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onPaste={handlePaste}
               onKeyDown={(e) => {
+                if (slashMenuOpen && !e.nativeEvent.isComposing) {
+                  const visibleCount = Math.min(filteredSlashItems.length, 12);
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setSlashIndex((i) => (i + 1) % visibleCount);
+                    return;
+                  }
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setSlashIndex((i) => (i - 1 + visibleCount) % visibleCount);
+                    return;
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setSlashDismissed(true);
+                    return;
+                  }
+                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey)) {
+                    const target = filteredSlashItems[Math.min(slashIndex, visibleCount - 1)];
+                    if (target && input.trim().toLowerCase() !== target.command.toLowerCase()) {
+                      e.preventDefault();
+                      selectSlashItem(target);
+                      return;
+                    }
+                  }
+                }
                 if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                   const wantCmd = cfg.sendKey === 'cmd-enter';
                   if ((wantCmd && (e.metaKey || e.ctrlKey)) || (!wantCmd && !e.shiftKey)) {
@@ -731,8 +994,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               }}
               placeholder={
                 cfg.sendKey === 'cmd-enter'
-                  ? '무엇이든 물어보세요 · Cmd+Enter 전송 · /compact'
-                  : '무엇이든 물어보세요 · /compact · 파일 드래그 첨부'
+                  ? '무엇이든 물어보세요 · / 명령어·스킬 · Cmd+Enter 전송 · 이미지 붙여넣기'
+                  : '무엇이든 물어보세요 · / 명령어·스킬 · 파일 드래그·붙여넣기'
               }
               className="w-full bg-transparent outline-none resize-none text-[14px] leading-relaxed"
               style={{ color: 'var(--fg)' }}
@@ -741,24 +1004,96 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
             {/* 컴포저 내부 하단 컨트롤 바 */}
             <div className="mt-2 flex items-center justify-between gap-1.5 text-[12.5px] min-w-0">
               <div className="flex items-center gap-1 min-w-0 flex-1 relative">
-                <button
-                  type="button"
-                  onClick={() => void handlePickCwd()}
-                  className="p-1.5 rounded-full hover:bg-[var(--surface)] cursor-pointer transition-colors shrink-0"
-                  style={{ color: 'var(--muted)' }}
-                  title={`작업 폴더 변경 (${state.cwd})`}
-                >
-                  <Plus size={16} />
-                </button>
+                {/* + 첨부 / 작업 폴더 메뉴 */}
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setModelMenuOpen(false);
+                      setModeMenuOpen(false);
+                      setPlusMenuOpen((v) => !v);
+                    }}
+                    className="p-1.5 rounded-full hover:bg-[var(--surface)] cursor-pointer transition-colors shrink-0"
+                    style={{ color: 'var(--muted)' }}
+                    title="파일 첨부 · 작업 폴더 · 추가 폴더 (--add-dir)"
+                    aria-label="첨부 및 폴더 메뉴"
+                  >
+                    <Plus size={16} />
+                  </button>
 
-                {/* 모델/Effort 팝오버 */}
+                  {plusMenuOpen && (
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className="absolute bottom-full left-0 mb-2 w-56 rounded-2xl border p-1.5 z-50 space-y-0.5"
+                      style={{
+                        background: 'var(--card)',
+                        borderColor: 'var(--border)',
+                        boxShadow: 'var(--shadow-popover)',
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => void handlePickFiles()}
+                        className="w-full text-left px-2.5 py-2 rounded-xl text-xs cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
+                        style={{ color: 'var(--fg)' }}
+                      >
+                        <ImagePlus size={14} style={{ color: 'var(--muted)' }} />
+                        <div className="min-w-0">
+                          <div className="font-medium">파일 · 이미지 첨부</div>
+                          <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>
+                            드래그 또는 ⌘V 붙여넣기 가능
+                          </div>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handlePickCwd()}
+                        className="w-full text-left px-2.5 py-2 rounded-xl text-xs cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
+                        style={{ color: 'var(--fg)' }}
+                      >
+                        <FolderOpen size={14} style={{ color: 'var(--muted)' }} />
+                        <div className="min-w-0">
+                          <div className="font-medium">작업 폴더 변경</div>
+                          <div className="text-[10.5px] truncate font-mono" style={{ color: 'var(--muted)' }}>
+                            {state.cwd.split('/').pop() || '/'}
+                          </div>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleAddExtraDir()}
+                        className="w-full text-left px-2.5 py-2 rounded-xl text-xs cursor-pointer hover:bg-[var(--surface)] flex items-center gap-2.5"
+                        style={{ color: 'var(--fg)' }}
+                      >
+                        <FolderPlus size={14} style={{ color: 'var(--muted)' }} />
+                        <div className="min-w-0">
+                          <div className="font-medium">추가 폴더 연결</div>
+                          <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>
+                            agy --add-dir 컨텍스트 확장
+                          </div>
+                        </div>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* 계층형 모델 선택 팝오버 (Antigravity 전체 모델 패밀리 + 티어 선택 + 사용량 보기) */}
                 <div className="relative min-w-0">
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setModeMenuOpen(false);
-                      setModelMenuOpen((v) => !v);
+                      setPlusMenuOpen(false);
+                      setModelMenuOpen((prev) => {
+                        const next = !prev;
+                        if (next) {
+                          setActiveFamilyId(activeModelFamily?.id || modelFamilies[0]?.id || null);
+                          void refreshModels(false);
+                        }
+                        return next;
+                      });
                     }}
                     className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg hover:bg-[var(--surface)] cursor-pointer transition-colors text-[12.5px] font-medium max-w-full min-w-0"
                     style={{ color: 'var(--fg-soft)' }}
@@ -773,53 +1108,195 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   {modelMenuOpen && (
                     <div
                       onClick={(e) => e.stopPropagation()}
-                      className="absolute bottom-full left-0 mb-2 w-64 rounded-2xl border p-2 z-50 space-y-2"
-                      style={{
-                        background: 'var(--card)',
-                        borderColor: 'var(--border)',
-                        boxShadow: 'var(--shadow-popover)',
-                      }}
+                      className="absolute bottom-full left-0 mb-2 z-50 flex items-end"
                     >
-                      <div className="space-y-0.5 max-h-52 overflow-y-auto scroll-thin">
-                        <div className="px-2 py-1 text-[10.5px] font-semibold" style={{ color: 'var(--muted)' }}>
-                          모델
-                        </div>
-                        {availableModels.map((m) => (
-                          <button
-                            key={m.value}
-                            type="button"
-                            onClick={() => requestSwitch('model', m.value)}
-                            className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition-colors hover:bg-[var(--surface)] truncate"
-                            style={{
-                              background: state.model === m.value ? 'var(--surface-active)' : undefined,
-                              fontWeight: state.model === m.value ? 600 : 400,
-                            }}
-                          >
-                            {m.label}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="border-t pt-2" style={{ borderColor: 'var(--border)' }}>
-                        <div className="px-2 pb-1.5 text-[10.5px] font-semibold" style={{ color: 'var(--muted)' }}>
-                          Effort (변경 시 캐시 초기화)
-                        </div>
-                        <div className="flex flex-wrap gap-1 px-1">
-                          {EFFORT_OPTIONS.map((ef) => (
+                      <div
+                        className="w-[300px] rounded-2xl border p-1.5"
+                        style={{
+                          background: 'var(--card)',
+                          borderColor: 'var(--border)',
+                          boxShadow: 'var(--shadow-popover)',
+                        }}
+                      >
+                        <div className="px-2.5 py-1.5 flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-semibold" style={{ color: 'var(--muted)' }}>
+                            모델
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] font-mono" style={{ color: 'var(--muted)' }}>
+                              {availableModels.length}개
+                            </span>
                             <button
-                              key={ef.value}
                               type="button"
-                              onClick={() => requestSwitch('effort', ef.value)}
-                              className="px-2 py-1 rounded-md text-[11px] cursor-pointer transition-colors"
-                              style={{
-                                background: state.effort === ef.value ? 'var(--fg)' : 'var(--surface)',
-                                color: state.effort === ef.value ? 'var(--bg)' : 'var(--fg-soft)',
-                              }}
+                              onClick={() => void handleRefreshModels()}
+                              className="p-1 rounded-md hover:bg-[var(--surface)] cursor-pointer"
+                              style={{ color: 'var(--muted)' }}
+                              title="agy models 목록 새로고침"
+                              aria-label="모델 목록 새로고침"
                             >
-                              {ef.label}
+                              <RefreshCw size={11} className={refreshingModels ? 'animate-spin' : ''} />
                             </button>
-                          ))}
+                          </div>
+                        </div>
+
+                        <div className="space-y-0.5 max-h-[360px] overflow-y-auto scroll-thin">
+                          {modelFamilies.map((fam) => {
+                            const activeVariant = fam.variants.find((v) => v.value === state.model);
+                            const isSelectedFamily = Boolean(activeVariant);
+                            const isExpanded = expandedFamily?.id === fam.id;
+                            const hasMultiple = fam.variants.length > 1;
+                            const shownTier =
+                              activeVariant?.tierLabel ||
+                              fam.variants.find((v) => v.value === fam.defaultVariantValue)?.tierLabel ||
+                              '';
+
+                            return (
+                              <div key={fam.id} className="space-y-1">
+                                <button
+                                  type="button"
+                                  onMouseEnter={() => {
+                                    if (hasMultiple) setActiveFamilyId(fam.id);
+                                    else setActiveFamilyId(null);
+                                  }}
+                                  onClick={() => {
+                                    if (!hasMultiple) {
+                                      requestSwitchModel(fam.defaultVariantValue);
+                                    } else {
+                                      setActiveFamilyId(fam.id);
+                                    }
+                                  }}
+                                  className="w-full text-left px-2.5 py-1.5 rounded-xl text-[12.5px] cursor-pointer transition-colors flex items-center justify-between gap-2"
+                                  style={{
+                                    background: isExpanded
+                                      ? 'var(--surface-active)'
+                                      : isSelectedFamily
+                                        ? 'var(--surface)'
+                                        : undefined,
+                                    color: 'var(--fg)',
+                                  }}
+                                >
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <span
+                                      className="truncate"
+                                      style={{ fontWeight: isSelectedFamily ? 600 : 450 }}
+                                    >
+                                      {fam.name}
+                                    </span>
+                                    {shownTier && (
+                                      <span className="text-[11.5px] shrink-0" style={{ color: 'var(--muted)' }}>
+                                        {shownTier}
+                                      </span>
+                                    )}
+                                    {fam.badge && (
+                                      <span
+                                        className="text-[10px] px-1.5 py-[1px] rounded-full shrink-0"
+                                        style={{
+                                          background:
+                                            fam.badge.tone === 'warn'
+                                              ? 'color-mix(in srgb, var(--warn) 12%, var(--surface))'
+                                              : 'var(--surface)',
+                                          color: fam.badge.tone === 'warn' ? 'var(--warn)' : 'var(--muted)',
+                                        }}
+                                      >
+                                        {fam.badge.label}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="shrink-0 flex items-center" style={{ color: 'var(--muted)' }}>
+                                    {isSelectedFamily ? (
+                                      <Check size={13} style={{ color: 'var(--fg)' }} />
+                                    ) : hasMultiple ? (
+                                      <ChevronRight size={13} />
+                                    ) : null}
+                                  </span>
+                                </button>
+
+                                {/* 좁은 분할 창(<520px)용 인라인 티어 선택 바 */}
+                                {hasMultiple && isExpanded && (
+                                  <div className="flex @[520px]:hidden flex-wrap gap-1 px-2.5 pb-1.5">
+                                    {fam.variants.map((v) => {
+                                      const active = state.model === v.value;
+                                      return (
+                                        <button
+                                          key={v.value}
+                                          type="button"
+                                          onClick={() => requestSwitchModel(v.value)}
+                                          className="px-2 py-0.5 rounded-md text-[11px] cursor-pointer transition-colors"
+                                          style={{
+                                            background: active ? 'var(--fg)' : 'var(--surface)',
+                                            color: active ? 'var(--bg)' : 'var(--fg-soft)',
+                                            fontWeight: active ? 600 : 400,
+                                          }}
+                                        >
+                                          {v.tierLabel || v.rawLabel}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="border-t mt-1.5 pt-1.5" style={{ borderColor: 'var(--border)' }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModelMenuOpen(false);
+                              void ctx.commands.execute('settings:open', 'agent-agy-settings');
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 rounded-xl text-[12px] cursor-pointer hover:bg-[var(--surface)] flex items-center justify-between gap-2"
+                            style={{ color: 'var(--fg-soft)' }}
+                          >
+                            <span className="inline-flex items-center gap-2">
+                              <BarChart3 size={13} style={{ color: 'var(--muted)' }} />
+                              <span>사용량 보기</span>
+                            </span>
+                            <ChevronRight size={13} style={{ color: 'var(--muted)' }} />
+                          </button>
                         </div>
                       </div>
+
+                      {/* 데스크톱 너비(>=520px)용 우측 티어 서브메뉴 */}
+                      {expandedFamily && expandedFamily.variants.length > 1 && (
+                        <div
+                          className="hidden @[520px]:block ml-1.5 w-44 rounded-2xl border p-1.5 space-y-0.5"
+                          style={{
+                            background: 'var(--card)',
+                            borderColor: 'var(--border)',
+                            boxShadow: 'var(--shadow-popover)',
+                          }}
+                        >
+                          <div className="px-2.5 py-1">
+                            <div className="text-[11px] font-semibold truncate" style={{ color: 'var(--fg)' }}>
+                              {expandedFamily.name}
+                            </div>
+                            <div className="text-[10px]" style={{ color: 'var(--muted)' }}>
+                              {expandedFamily.id === 'orchestrator' ? '백엔드 모델 선택' : '추론 강도 선택'}
+                            </div>
+                          </div>
+                          {expandedFamily.variants.map((v) => {
+                            const active = state.model === v.value;
+                            return (
+                              <button
+                                key={v.value}
+                                type="button"
+                                onClick={() => requestSwitchModel(v.value)}
+                                className="w-full text-left px-2.5 py-1.5 rounded-xl text-xs cursor-pointer transition-colors hover:bg-[var(--surface)] flex items-center justify-between gap-2"
+                                style={{
+                                  background: active ? 'var(--surface-active)' : undefined,
+                                  fontWeight: active ? 600 : 400,
+                                  color: 'var(--fg)',
+                                }}
+                              >
+                                <span className="truncate">{v.tierLabel || v.rawLabel}</span>
+                                {active && <Check size={12} className="shrink-0" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -857,6 +1334,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     onClick={(e) => {
                       e.stopPropagation();
                       setModelMenuOpen(false);
+                      setPlusMenuOpen(false);
                       setModeMenuOpen((v) => !v);
                     }}
                     className="inline-flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-[var(--surface)] cursor-pointer text-[12.5px]"
@@ -871,7 +1349,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   {modeMenuOpen && (
                     <div
                       onClick={(e) => e.stopPropagation()}
-                      className="absolute bottom-full right-0 mb-2 w-44 rounded-xl border p-1.5 z-50 space-y-0.5"
+                      className="absolute bottom-full right-0 mb-2 w-48 rounded-xl border p-1.5 z-50 space-y-0.5"
                       style={{
                         background: 'var(--card)',
                         borderColor: 'var(--border)',
@@ -886,20 +1364,19 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                             updateState({ mode: m.value });
                             setModeMenuOpen(false);
                           }}
-                          className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs cursor-pointer hover:bg-[var(--surface)]"
+                          className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs cursor-pointer hover:bg-[var(--surface)] flex items-center justify-between gap-2"
                           style={{
-                            background:
-                              state.mode === m.value || (state.mode === 'auto' && m.value === 'turbo')
-                                ? 'var(--surface-active)'
-                                : undefined,
-                            fontWeight:
-                              state.mode === m.value || (state.mode === 'auto' && m.value === 'turbo') ? 600 : 400,
+                            background: state.mode === m.value ? 'var(--surface-active)' : undefined,
+                            fontWeight: state.mode === m.value ? 600 : 400,
                           }}
                         >
-                          <div>{m.label}</div>
-                          <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>
-                            {m.desc}
+                          <div>
+                            <div>{m.label}</div>
+                            <div className="text-[10.5px] font-normal" style={{ color: 'var(--muted)' }}>
+                              {m.desc}
+                            </div>
                           </div>
+                          {state.mode === m.value && <Check size={12} className="shrink-0" />}
                         </button>
                       ))}
                     </div>

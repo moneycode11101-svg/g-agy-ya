@@ -121,23 +121,30 @@ export class AgyPluginBridge {
       execFile(
         resolveAgyBinary(),
         ['models'],
-        { cwd: os.homedir(), timeout: 10_000, maxBuffer: 256 * 1024, env: buildAgySpawnEnv() },
+        { cwd: os.homedir(), timeout: 12_000, maxBuffer: 256 * 1024, env: buildAgySpawnEnv() },
         (err, stdout) => {
           if (err || !stdout) {
             resolve(this.cachedModels?.items || FALLBACK_AGY_MODELS);
             return;
           }
-          const parsed: AgyModelOption[] = [{ value: 'default', label: '기본 모델 (agy)' }];
-          const clean = stdout.replace(/\r/g, '\n');
+          const parsed: AgyModelOption[] = [];
+          const seen = new Set<string>();
+          // Strip ANSI escape sequences and handle both TTY spaces (`  `) and non-TTY single tab (`\t`)
+          const clean = stdout.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\r/g, '\n');
           for (const rawLine of clean.split('\n')) {
             const line = rawLine.trim();
             if (!line || line.includes('Fetching available models')) continue;
-            const m = line.match(/^([a-z0-9][a-z0-9._-]+)\s{2,}(.+)$/i);
+            const m = line.match(/^([a-z0-9][a-z0-9._-]+)(?:\t+|\s{2,})(.+)$/i);
             if (m) {
-              parsed.push({ value: m[1].trim(), label: m[2].trim() });
+              const value = m[1].trim();
+              const label = m[2].trim();
+              if (!seen.has(value)) {
+                seen.add(value);
+                parsed.push({ value, label });
+              }
             }
           }
-          const items = parsed.length > 1 ? parsed : FALLBACK_AGY_MODELS;
+          const items = parsed.length > 0 ? parsed : FALLBACK_AGY_MODELS;
           this.cachedModels = { items, fetchedAt: Date.now() };
           resolve(items);
         }
@@ -286,7 +293,17 @@ export class AgyPluginBridge {
     const flags: string[] = [];
 
     const effectiveModel = req.model && req.model !== 'default' ? req.model : cfg.defaultModel;
-    const effectiveEffort = req.effort && req.effort !== 'default' ? req.effort : cfg.defaultEffort;
+    const modelHasEmbeddedTier = Boolean(
+      req.model &&
+        req.model !== 'default' &&
+        /-(low|medium|high|xhigh|max)$/i.test(req.model)
+    );
+    const effectiveEffort =
+      req.effort && req.effort !== 'default'
+        ? req.effort
+        : modelHasEmbeddedTier
+          ? 'default'
+          : cfg.defaultEffort;
     const hasExplicitEffort = Boolean(effectiveEffort && effectiveEffort !== 'default');
 
     if (effectiveModel && effectiveModel !== 'default') {
@@ -314,13 +331,20 @@ export class AgyPluginBridge {
       flags.push('--settings', JSON.stringify({ permissions: { allow: allowRules } }));
     }
 
+    const addDirs = Array.isArray(req.addDirs) ? req.addDirs : [];
+    for (const dir of addDirs) {
+      if (dir && fs.existsSync(dir)) {
+        flags.push('--add-dir', dir);
+      }
+    }
+
     const cwd = req.cwd && fs.existsSync(req.cwd) ? req.cwd : os.homedir();
     return { flags, cwd };
   }
 
   private formatFinalPrompt(req: AgySendPromptRequest): string {
     if (req.images && req.images.length > 0) {
-      const refs = req.images.map((img) => `[첨부 이미지: ${img}]`).join('\n');
+      const refs = req.images.map((img) => `[첨부 파일: ${img}]`).join('\n');
       return `${refs}\n\n${req.prompt}`;
     }
     return req.prompt;
