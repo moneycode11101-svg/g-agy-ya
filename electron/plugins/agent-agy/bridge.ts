@@ -185,6 +185,8 @@ interface TabSessionBinding {
   mode: ChatMode;
   acpMode: string;
   inTurn: boolean;
+  turnToken: number;
+  activePromptPromise: Promise<void> | null;
   cancelledByUser: boolean;
   hasActiveWatcher: boolean;
   emittedToolIds: Set<string>;
@@ -476,6 +478,8 @@ export class AgyPluginBridge {
         mode: effectiveMode,
         acpMode: '',
         inTurn: false,
+        turnToken: 0,
+        activePromptPromise: null,
         cancelledByUser: false,
         hasActiveWatcher: false,
         emittedToolIds: new Set<string>(),
@@ -502,6 +506,20 @@ export class AgyPluginBridge {
       }
     }
 
+    // Wait briefly for any previously cancelled in-flight `session/prompt` to settle on ACP before starting the new turn
+    if (binding.activePromptPromise) {
+      if (!binding.cancelledByUser) {
+        binding.cancelledByUser = true;
+        this.sendNotification(daemon, 'session/cancel', { sessionId: binding.sessionId });
+      }
+      await Promise.race([
+        binding.activePromptPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+      ]);
+    }
+
+    const myTurnToken = binding.turnToken + 1;
+    binding.turnToken = myTurnToken;
     binding.mode = effectiveMode;
     binding.inTurn = true;
     binding.cancelledByUser = false;
@@ -538,12 +556,12 @@ export class AgyPluginBridge {
 
     // Fire `session/prompt` asynchronously — return `{ ok: true }` right away so UI streams live!
     const activeBinding = binding;
-    void this.sendRequest(daemon, 'session/prompt', {
+    const promptPromise = this.sendRequest(daemon, 'session/prompt', {
       sessionId: activeBinding.sessionId,
       prompt: contentBlocks,
     })
       .then((res) => {
-        if (!activeBinding.inTurn) return;
+        if (activeBinding.turnToken !== myTurnToken || !activeBinding.inTurn) return;
         activeBinding.inTurn = false;
         this.cancelPendingPermissionsForTab(activeBinding.tabSessionId);
 
@@ -569,7 +587,7 @@ export class AgyPluginBridge {
         });
       })
       .catch((err) => {
-        if (!activeBinding.inTurn) return;
+        if (activeBinding.turnToken !== myTurnToken || !activeBinding.inTurn) return;
         activeBinding.inTurn = false;
         this.cancelPendingPermissionsForTab(activeBinding.tabSessionId);
 
@@ -591,8 +609,14 @@ export class AgyPluginBridge {
           exitCode: isCancelled ? 0 : 1,
           error: isCancelled ? undefined : msg,
         });
+      })
+      .finally(() => {
+        if (activeBinding.turnToken === myTurnToken) {
+          activeBinding.activePromptPromise = null;
+        }
       });
 
+    activeBinding.activePromptPromise = promptPromise;
     return { ok: true };
   }
 
@@ -1001,6 +1025,8 @@ export class AgyPluginBridge {
       }
       return;
     }
+
+    if (binding.cancelledByUser || !binding.inTurn) return;
 
     if (updateType === 'agent_thought_chunk') {
       const content =
