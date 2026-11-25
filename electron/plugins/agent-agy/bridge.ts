@@ -2,7 +2,13 @@ import { ChildProcess, execFile, execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AgyEvent, ChatMode, SessionMetrics } from '../../../src/shared/types';
+import type {
+  AgyEvent,
+  ChatMode,
+  ChatStepItem,
+  PermissionOption,
+  SessionMetrics,
+} from '../../../src/shared/types';
 import {
   FALLBACK_AGY_MODELS,
   type AgyModelOption,
@@ -17,11 +23,28 @@ import {
   watchSingleSession,
 } from './transcript';
 
-const CLI_ONLY_SLASH_RE = /^\/(model|usage|help|changelog|agents?|mcp|plugins?)\b/i;
+const CLI_ONLY_SLASH_RE = /^\/(usage|help|changelog)\b/i;
 
-function summarizeInput(input: unknown): string {
-  if (!input || typeof input !== 'object') return '';
-  const o = input as Record<string, unknown>;
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+
+const MAX_INLINE_IMAGE_BYTES = 15 * 1024 * 1024;
+
+function summarizeToolArgs(name: string, title?: string, input?: unknown): string {
+  const o = input && typeof input === 'object' ? (input as Record<string, unknown>) : null;
+  if (o && typeof o.toolSummary === 'string' && o.toolSummary.trim()) {
+    return o.toolSummary.trim();
+  }
+  if (title && title.trim() && title.trim() !== name) {
+    const t = title.replace(/\s+/g, ' ').trim();
+    return t.length > 72 ? t.slice(0, 72) + '…' : t;
+  }
+  if (!o) return '';
   const cand =
     o.Path ??
     o.path ??
@@ -40,41 +63,157 @@ function summarizeInput(input: unknown): string {
   const s = String(cand).replace(/\s+/g, ' ').trim();
   if (!s) return '';
   if (s.includes('/') && !s.includes(' ')) return path.basename(s);
-  return s.length > 48 ? s.slice(0, 48) + '…' : s;
+  return s.length > 64 ? s.slice(0, 64) + '…' : s;
 }
 
-interface TurnState {
-  prompt: string;
-  requestedModel: string;
+function formatToolOutput(rawOutput: unknown, content?: unknown): string {
+  if (typeof rawOutput === 'string') return rawOutput.slice(0, 1200);
+  if (rawOutput && typeof rawOutput === 'object') {
+    const r = rawOutput as Record<string, unknown>;
+    if (typeof r.output === 'string') return r.output.slice(0, 1200);
+    if (typeof r.content === 'string') return r.content.slice(0, 1200);
+    if (typeof r.stdout === 'string') return r.stdout.slice(0, 1200);
+    if (typeof r.error === 'string') return r.error.slice(0, 1200);
+    try {
+      return JSON.stringify(rawOutput, null, 2).slice(0, 1200);
+    } catch {
+      return '';
+    }
+  }
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const item of content) {
+      if (!item || typeof item !== 'object') continue;
+      const rec = item as Record<string, unknown>;
+      if (rec.type === 'content' && rec.content && typeof rec.content === 'object') {
+        const inner = rec.content as Record<string, unknown>;
+        if (typeof inner.text === 'string') parts.push(inner.text);
+      } else if (typeof rec.text === 'string') {
+        parts.push(rec.text);
+      }
+    }
+    return parts.join('\n').slice(0, 1200);
+  }
+  return '';
+}
+
+function parseStepsPayload(args: unknown): ChatStepItem[] | null {
+  if (!args || typeof args !== 'object') return null;
+  const rawSteps = (args as Record<string, unknown>).steps;
+  if (!Array.isArray(rawSteps)) return null;
+  const out: ChatStepItem[] = [];
+  for (const s of rawSteps) {
+    if (!s || typeof s !== 'object') continue;
+    const rec = s as Record<string, unknown>;
+    const title = typeof rec.title === 'string' ? rec.title.trim() : '';
+    const st = typeof rec.status === 'string' ? rec.status : 'pending';
+    if (!title) continue;
+    const status: ChatStepItem['status'] =
+      st === 'in_progress' || st === 'done' || st === 'skipped' || st === 'failed' ? st : 'pending';
+    out.push({ title, status });
+  }
+  return out.length > 0 ? out : null;
+}
+
+function resolveModelWithEffort(
+  reqModel: string,
+  reqEffort: string,
+  cfg: Readonly<AgyPluginConfig>
+): string {
+  const effectiveModel = reqModel && reqModel !== 'default' ? reqModel : cfg.defaultModel || '';
+  if (!effectiveModel || effectiveModel === 'default') return '';
+
+  const modelHasEmbeddedTier = /-(low|medium|high|xhigh|max)$/i.test(effectiveModel);
+  const effectiveEffort =
+    reqEffort && reqEffort !== 'default'
+      ? reqEffort
+      : modelHasEmbeddedTier
+        ? 'default'
+        : cfg.defaultEffort || 'default';
+
+  if (effectiveEffort && effectiveEffort !== 'default') {
+    const base = effectiveModel.replace(/-(low|medium|high|xhigh|max)$/i, '');
+    return `${base}-${effectiveEffort}`;
+  }
+  return effectiveModel;
+}
+
+function mapChatModeToAcpMode(mode: ChatMode): string {
+  switch (mode) {
+    case 'turbo':
+      return 'auto';
+    case 'auto':
+      return 'auto';
+    case 'accept-edits':
+      return 'accept-edits';
+    case 'plan':
+      return 'plan';
+    case 'strict':
+      return 'default';
+    default:
+      return 'auto';
+  }
+}
+
+type DaemonKey = 'default' | 'sandbox';
+
+interface PendingRpc {
+  resolve: (res: unknown) => void;
+  reject: (err: Error) => void;
+}
+
+interface AcpDaemon {
+  key: DaemonKey;
+  proc: ChildProcess;
+  assetRevision: number;
+  lineBuf: string;
+  stderrBuf: string;
+  nextId: number;
+  pending: Map<number, PendingRpc>;
+  initPromise: Promise<void>;
+  closed: boolean;
+  stale: boolean;
+}
+
+interface TabSessionBinding {
+  tabSessionId: string;
+  daemonKey: DaemonKey;
+  sessionId: string;
   cwd: string;
-  emittedAnyText: boolean;
-  sawCheckpoint: boolean;
-  resultError: string | null;
+  addDirsKey: string;
+  model: string;
+  mode: ChatMode;
+  acpMode: string;
+  inTurn: boolean;
+  cancelledByUser: boolean;
+  hasActiveWatcher: boolean;
   emittedToolIds: Set<string>;
 }
 
-interface PersistentWorker {
+interface PendingPermission {
+  requestId: string;
+  rpcId: number | string;
+  daemon: AcpDaemon;
   tabSessionId: string;
-  proc: ChildProcess;
-  configKey: string;
-  conversationId: string | null;
-  cwd: string;
-  hasActiveWatcher: boolean;
-  inTurn: boolean;
-  authEmitted: boolean;
-  lineBuf: string;
-  stderrBuf: string;
-  turn: TurnState | null;
-  closed: boolean;
-  superseded: boolean;
+  sessionId: string;
 }
 
 /**
- * Isolated `agent-agy` process bridge (no Git Diff, no global settingsStore coupling).
- * Supports persistent `stream-json` workers with automatic restart on config or Layer 2 asset mutation.
+ * Official Antigravity ACP (`agy acp --stdio`) persistent bridge.
+ *
+ * Mirrors vanilla Antigravity Hub architecture:
+ * - One persistent ACP daemon shared across tabs (zero cold-start on follow-ups or model/mode switches)
+ * - Live streaming `agent_thought_chunk`, `agent_message_chunk`, `tool_call`/`tool_call_update`
+ * - Native `update_focus`, `update_steps`, `session_info_update` (AI auto-title), `available_commands_update`
+ * - Interactive `session/request_permission` approvals (auto-approved in turbo mode, inline cards in other modes)
+ * - Native multimodal `{ type: 'image', mimeType, data }` content blocks
+ * - Clean `session/cancel` without killing the session or causing `[Notice] server restart`
  */
 export class AgyPluginBridge {
-  private workers = new Map<string, PersistentWorker>();
+  private daemons = new Map<DaemonKey, AcpDaemon>();
+  private tabBindings = new Map<string, TabSessionBinding>();
+  private sessionToTab = new Map<string, string>();
+  private pendingPermissions = new Map<string, PendingPermission>();
   private oneShotProcs = new Map<string, ChildProcess>();
   private sessionWatchers = new Map<string, () => void>();
   private readonly getConfig: () => Readonly<AgyPluginConfig>;
@@ -83,6 +222,8 @@ export class AgyPluginBridge {
   private assetRevision = 0;
   private cachedVersion: string | null = null;
   private cachedModels: { items: AgyModelOption[]; fetchedAt: number } | null = null;
+  private cachedCommands: Array<{ name: string; description: string }> = [];
+  private disposed = false;
 
   constructor(opts: {
     getConfig: () => Readonly<AgyPluginConfig>;
@@ -94,9 +235,26 @@ export class AgyPluginBridge {
     this.emit = opts.emit;
   }
 
-  /** Bumping assetRevision forces idle/next-turn workers to respawn with fresh plugins/MCP */
+  /** Pre-warm the default ACP daemon silently so the first prompt has near-zero startup lag */
+  warmup(): void {
+    if (this.disposed) return;
+    void this.ensureDaemon('default').catch(() => {
+      // ignore if agy CLI is unavailable or not yet authenticated
+    });
+  }
+
+  /** Bumping assetRevision marks active ACP daemons stale so idle ones reload new plugins/MCP */
   bumpAssetRevision(): void {
     this.assetRevision += 1;
+    for (const daemon of this.daemons.values()) {
+      daemon.stale = true;
+      const hasBusyTab = Array.from(this.tabBindings.values()).some(
+        (b) => b.daemonKey === daemon.key && b.inTurn
+      );
+      if (!hasBusyTab) {
+        this.shutdownDaemon(daemon.key);
+      }
+    }
   }
 
   detectVersion(): string {
@@ -129,7 +287,6 @@ export class AgyPluginBridge {
           }
           const parsed: AgyModelOption[] = [];
           const seen = new Set<string>();
-          // Strip ANSI escape sequences and handle both TTY spaces (`  `) and non-TTY single tab (`\t`)
           const clean = stdout.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\r/g, '\n');
           for (const rawLine of clean.split('\n')) {
             const line = rawLine.trim();
@@ -176,103 +333,848 @@ export class AgyPluginBridge {
 
   cancelTurn(tabSessionId: string): void {
     this.killOneShot(tabSessionId);
-    this.closeWorker(tabSessionId, false);
+    this.cancelPendingPermissionsForTab(tabSessionId);
+
+    const binding = this.tabBindings.get(tabSessionId);
+    if (!binding || !binding.inTurn) return;
+    binding.cancelledByUser = true;
+
+    const daemon = this.daemons.get(binding.daemonKey);
+    if (daemon && !daemon.closed) {
+      this.sendNotification(daemon, 'session/cancel', { sessionId: binding.sessionId });
+    }
   }
 
   submitAuthCode(tabSessionId: string, code: string): boolean {
-    const w = this.workers.get(tabSessionId);
-    const proc = w && !w.closed ? w.proc : this.oneShotProcs.get(tabSessionId);
-    if (!proc || proc.killed || !proc.stdin || !proc.stdin.writable) return false;
-    proc.stdin.write(code.trim() + '\n');
+    const oneShot = this.oneShotProcs.get(tabSessionId);
+    if (oneShot && !oneShot.killed && oneShot.stdin?.writable) {
+      oneShot.stdin.write(code.trim() + '\n');
+      return true;
+    }
+    return false;
+  }
+
+  respondPermission(tabSessionId: string, requestId: string, optionId: string | null): boolean {
+    const pending = this.pendingPermissions.get(requestId);
+    if (!pending || pending.tabSessionId !== tabSessionId) return false;
+    this.pendingPermissions.delete(requestId);
+
+    if (!pending.daemon.closed) {
+      const result = optionId
+        ? { outcome: { outcome: 'selected', optionId } }
+        : { outcome: { outcome: 'cancelled' } };
+      this.sendJsonRpcResponse(pending.daemon, pending.rpcId, result);
+    }
+    this.emit({ type: 'permission_cleared', tabSessionId, requestId });
     return true;
   }
 
-  sendPrompt(req: AgySendPromptRequest): { ok: boolean; error?: string } {
+  async sendPrompt(req: AgySendPromptRequest): Promise<{ ok: boolean; error?: string }> {
     this.killOneShot(req.tabSessionId);
 
-    const { flags, cwd } = this.buildCommonFlags(req);
-    const finalPrompt = this.formatFinalPrompt(req);
+    const trimmed = req.prompt.trim();
+    if (!trimmed) return { ok: false, error: '빈 메시지입니다.' };
 
-    if (CLI_ONLY_SLASH_RE.test(req.prompt.trim())) {
-      return this.sendOneShotCommand(req, flags, cwd, finalPrompt);
+    // CLI-only meta commands (`/usage`, `/help`, `/changelog`)
+    if (CLI_ONLY_SLASH_RE.test(trimmed)) {
+      return this.sendOneShotCommand(req);
     }
 
-    const configKey = JSON.stringify({ cwd, flags, assetRev: this.assetRevision });
-    const existing = this.workers.get(req.tabSessionId);
-    const convMatches =
-      !req.agyConversationId ||
-      !existing?.conversationId ||
-      existing.conversationId === req.agyConversationId;
+    const cfg = this.getConfig();
+    const effectiveMode: ChatMode = req.mode || cfg.localPermission || 'turbo';
+    const daemonKey: DaemonKey = effectiveMode === 'strict' ? 'sandbox' : 'default';
+    const cwd = req.cwd && fs.existsSync(req.cwd) ? req.cwd : os.homedir();
+    const addDirs = Array.isArray(req.addDirs)
+      ? Array.from(new Set(req.addDirs.filter((d) => d && d !== cwd && fs.existsSync(d))))
+      : [];
+    const addDirsKey = addDirs.join('|');
+    const desiredModel = resolveModelWithEffort(req.model, req.effort, cfg);
+    const desiredAcpMode = mapChatModeToAcpMode(effectiveMode);
 
-    let worker: PersistentWorker;
-    if (
-      existing &&
-      !existing.closed &&
-      !existing.superseded &&
-      !existing.inTurn &&
-      !existing.proc.killed &&
-      existing.proc.stdin?.writable &&
-      existing.configKey === configKey &&
-      convMatches
-    ) {
-      worker = existing;
-    } else {
-      this.closeWorker(req.tabSessionId, false);
-      const spawned = this.spawnPersistentWorker(req, flags, cwd, configKey);
-      if (!spawned.ok) return { ok: false, error: spawned.error };
-      worker = spawned.worker;
-    }
-
-    worker.inTurn = true;
-    worker.stderrBuf = '';
-    worker.turn = {
-      prompt: req.prompt,
-      requestedModel: req.model,
-      cwd,
-      emittedAnyText: false,
-      sawCheckpoint: false,
-      resultError: null,
-      emittedToolIds: new Set<string>(),
-    };
-
-    const payload = JSON.stringify({ event: 'user', message: { content: finalPrompt } }) + '\n';
+    let daemon: AcpDaemon;
     try {
-      worker.proc.stdin?.write(payload);
+      // If daemon was marked stale by Layer 2 asset toggle and idle, respawn fresh
+      const existingDaemon = this.daemons.get(daemonKey);
+      if (existingDaemon?.stale) {
+        const hasBusyTab = Array.from(this.tabBindings.values()).some(
+          (b) => b.daemonKey === daemonKey && b.inTurn
+        );
+        if (!hasBusyTab) this.shutdownDaemon(daemonKey);
+      }
+      daemon = await this.ensureDaemon(daemonKey);
     } catch (err) {
-      this.closeWorker(req.tabSessionId, false);
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
+
+    let binding = this.tabBindings.get(req.tabSessionId);
+    const canReuseBinding = Boolean(
+      binding &&
+        binding.daemonKey === daemonKey &&
+        binding.sessionId &&
+        (!req.agyConversationId || binding.sessionId === req.agyConversationId) &&
+        binding.cwd === cwd &&
+        binding.addDirsKey === addDirsKey
+    );
+
+    if (!canReuseBinding || !binding) {
+      if (binding) {
+        this.sessionToTab.delete(binding.sessionId);
+      }
+
+      let sessionId: string | null = null;
+      let resumedModels: AgyModelOption[] | null = null;
+
+      if (req.agyConversationId) {
+        try {
+          const res = (await this.sendRequest(daemon, 'session/resume', {
+            sessionId: req.agyConversationId,
+            cwd,
+            ...(addDirs.length > 0 ? { additionalDirectories: addDirs } : {}),
+            mcpServers: [],
+          })) as Record<string, unknown>;
+          sessionId =
+            (typeof res?.sessionId === 'string' && res.sessionId) || req.agyConversationId;
+          resumedModels = this.extractAvailableModels(res);
+        } catch {
+          // Fall back to starting a fresh session if conversation cannot be resumed
+          sessionId = null;
+        }
+      }
+
+      if (!sessionId) {
+        try {
+          const res = (await this.sendRequest(daemon, 'session/new', {
+            cwd,
+            ...(addDirs.length > 0 ? { additionalDirectories: addDirs } : {}),
+            mcpServers: [],
+          })) as Record<string, unknown>;
+          sessionId = typeof res?.sessionId === 'string' ? res.sessionId : '';
+          resumedModels = this.extractAvailableModels(res);
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : 'ACP 세션 생성에 실패했습니다.',
+          };
+        }
+      }
+
+      if (!sessionId) {
+        return { ok: false, error: 'ACP 세션 ID를 받지 못했습니다.' };
+      }
+
+      if (resumedModels && resumedModels.length > 0) {
+        this.cachedModels = { items: resumedModels, fetchedAt: Date.now() };
+      }
+
+      binding = {
+        tabSessionId: req.tabSessionId,
+        daemonKey,
+        sessionId,
+        cwd,
+        addDirsKey,
+        model: '',
+        mode: effectiveMode,
+        acpMode: '',
+        inTurn: false,
+        cancelledByUser: false,
+        hasActiveWatcher: false,
+        emittedToolIds: new Set<string>(),
+      };
+
+      this.tabBindings.set(req.tabSessionId, binding);
+      this.sessionToTab.set(sessionId, req.tabSessionId);
+
+      registerOwnSession({
+        conversationId: sessionId,
+        title: trimmed.replace(/\s+/g, ' ').slice(0, 40),
+        cwd,
+      });
+
+      this.emit({
+        type: 'session_init',
+        tabSessionId: req.tabSessionId,
+        agyConversationId: sessionId,
+      });
+      this.ensureWatcher(binding);
+
+      if (this.cachedCommands.length > 0) {
+        this.emit({ type: 'commands_update', commands: this.cachedCommands });
+      }
+    }
+
+    binding.mode = effectiveMode;
+    binding.inTurn = true;
+    binding.cancelledByUser = false;
+    binding.emittedToolIds.clear();
+
+    // Live model switch with ZERO worker restart
+    if (desiredModel && binding.model !== desiredModel) {
+      try {
+        await this.sendRequest(daemon, 'session/set_model', {
+          sessionId: binding.sessionId,
+          modelId: desiredModel,
+        });
+        binding.model = desiredModel;
+      } catch {
+        // Non-fatal: continue with server default if model alias unsupported
+      }
+    }
+
+    // Live mode switch with ZERO worker restart
+    if (binding.acpMode !== desiredAcpMode) {
+      try {
+        await this.sendRequest(daemon, 'session/set_mode', {
+          sessionId: binding.sessionId,
+          modeId: desiredAcpMode,
+        });
+        binding.acpMode = desiredAcpMode;
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    // Build native multimodal prompt content blocks
+    const contentBlocks = this.buildPromptBlocks(trimmed, req.images);
+
+    // Fire `session/prompt` asynchronously — return `{ ok: true }` right away so UI streams live!
+    const activeBinding = binding;
+    void this.sendRequest(daemon, 'session/prompt', {
+      sessionId: activeBinding.sessionId,
+      prompt: contentBlocks,
+    })
+      .then((res) => {
+        if (!activeBinding.inTurn) return;
+        activeBinding.inTurn = false;
+        this.cancelPendingPermissionsForTab(activeBinding.tabSessionId);
+
+        const rec = res && typeof res === 'object' ? (res as Record<string, unknown>) : {};
+        const stopReason = typeof rec.stopReason === 'string' ? rec.stopReason : '';
+
+        registerOwnSession({ conversationId: activeBinding.sessionId, cwd: activeBinding.cwd });
+        this.ensureWatcher(activeBinding);
+        const metrics = analyzeSingleSession(
+          activeBinding.sessionId,
+          this.quota.getCachedSnapshot()
+        );
+        if (metrics) {
+          this.emit({ type: 'metrics', tabSessionId: activeBinding.tabSessionId, metrics });
+        }
+
+        const isCancelled = activeBinding.cancelledByUser || stopReason === 'cancelled';
+        this.emit({
+          type: 'done',
+          tabSessionId: activeBinding.tabSessionId,
+          exitCode: 0,
+          error: isCancelled ? undefined : undefined,
+        });
+      })
+      .catch((err) => {
+        if (!activeBinding.inTurn) return;
+        activeBinding.inTurn = false;
+        this.cancelPendingPermissionsForTab(activeBinding.tabSessionId);
+
+        const msg = err instanceof Error ? err.message : String(err);
+        const isCancelled =
+          activeBinding.cancelledByUser || /cancel/i.test(msg);
+
+        const metrics = analyzeSingleSession(
+          activeBinding.sessionId,
+          this.quota.getCachedSnapshot()
+        );
+        if (metrics) {
+          this.emit({ type: 'metrics', tabSessionId: activeBinding.tabSessionId, metrics });
+        }
+
+        this.emit({
+          type: 'done',
+          tabSessionId: activeBinding.tabSessionId,
+          exitCode: isCancelled ? 0 : 1,
+          error: isCancelled ? undefined : msg,
+        });
+      });
 
     return { ok: true };
   }
 
   dispose(): void {
+    this.disposed = true;
     for (const id of [...this.oneShotProcs.keys()]) {
       this.killOneShot(id);
     }
-    for (const id of [...this.workers.keys()]) {
-      this.closeWorker(id, false);
+    for (const key of [...this.daemons.keys()]) {
+      this.shutdownDaemon(key);
     }
     for (const id of [...this.sessionWatchers.keys()]) {
       this.unwatchSession(id);
     }
+    this.tabBindings.clear();
+    this.sessionToTab.clear();
+    this.pendingPermissions.clear();
   }
 
-  private closeWorker(tabSessionId: string, graceful = false): void {
-    const w = this.workers.get(tabSessionId);
-    if (!w) return;
-    w.superseded = true;
-    this.workers.delete(tabSessionId);
-    try {
-      if (graceful && !w.inTurn && w.proc.stdin && !w.proc.stdin.destroyed) {
-        w.proc.stdin.end();
-      } else if (!w.proc.killed) {
-        w.proc.kill('SIGTERM');
+  // ---------------------------------------------------------------------------
+  // Persistent ACP Daemon Lifecycle & JSON-RPC Transport
+  // ---------------------------------------------------------------------------
+
+  private async ensureDaemon(key: DaemonKey): Promise<AcpDaemon> {
+    const existing = this.daemons.get(key);
+    if (existing && !existing.closed && !existing.proc.killed) {
+      await existing.initPromise;
+      return existing;
+    }
+
+    const agyBin = resolveAgyBinary();
+    const args = ['acp', '--stdio'];
+    if (key === 'sandbox') {
+      args.push('--sandbox');
+    }
+
+    const proc = spawn(agyBin, args, {
+      cwd: os.homedir(),
+      env: buildAgySpawnEnv(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    proc.stdin?.on('error', () => {
+      // ignore EPIPE on shutdown
+    });
+
+    let resolveInit!: () => void;
+    let rejectInit!: (err: Error) => void;
+    const initPromise = new Promise<void>((res, rej) => {
+      resolveInit = res;
+      rejectInit = rej;
+    });
+
+    const daemon: AcpDaemon = {
+      key,
+      proc,
+      assetRevision: this.assetRevision,
+      lineBuf: '',
+      stderrBuf: '',
+      nextId: 1,
+      pending: new Map(),
+      initPromise,
+      closed: false,
+      stale: false,
+    };
+
+    this.daemons.set(key, daemon);
+
+    proc.stdout?.on('data', (buf: Buffer) => {
+      daemon.lineBuf += buf.toString('utf8');
+      let nl = daemon.lineBuf.indexOf('\n');
+      while (nl !== -1) {
+        const line = daemon.lineBuf.slice(0, nl).trim();
+        daemon.lineBuf = daemon.lineBuf.slice(nl + 1);
+        if (line && line.startsWith('{')) {
+          try {
+            const msg = JSON.parse(line) as Record<string, unknown>;
+            this.handleAcpMessage(daemon, msg);
+          } catch {
+            // ignore non-JSON log line
+          }
+        }
+        nl = daemon.lineBuf.indexOf('\n');
       }
+    });
+
+    proc.stderr?.on('data', (buf: Buffer) => {
+      const chunk = buf.toString('utf8');
+      daemon.stderrBuf = (daemon.stderrBuf + chunk).slice(-8192);
+      const urlMatch = chunk.match(/https:\/\/accounts\.google\.com\/o\/oauth2\/auth[^\s]+/);
+      if (urlMatch) {
+        for (const binding of this.tabBindings.values()) {
+          if (binding.daemonKey === key && binding.inTurn) {
+            this.emit({
+              type: 'auth_required',
+              tabSessionId: binding.tabSessionId,
+              url: urlMatch[0],
+              message: 'agy CLI Google 로그인이 필요합니다. 브라우저에서 인증 후 코드를 붙여넣으세요.',
+            });
+          }
+        }
+      }
+    });
+
+    const handleClose = (reason: string) => {
+      if (daemon.closed) return;
+      daemon.closed = true;
+      if (this.daemons.get(key) === daemon) {
+        this.daemons.delete(key);
+      }
+
+      const err = new Error(reason);
+      rejectInit(err);
+      for (const p of daemon.pending.values()) {
+        p.reject(err);
+      }
+      daemon.pending.clear();
+
+      // Clear bindings associated with this dead daemon
+      for (const [tabId, binding] of [...this.tabBindings.entries()]) {
+        if (binding.daemonKey !== key) continue;
+        this.cancelPendingPermissionsForTab(tabId);
+        if (binding.inTurn) {
+          binding.inTurn = false;
+          this.emit({
+            type: 'done',
+            tabSessionId: tabId,
+            exitCode: 1,
+            error: binding.cancelledByUser ? undefined : reason,
+          });
+        }
+        this.sessionToTab.delete(binding.sessionId);
+        this.tabBindings.delete(tabId);
+      }
+    };
+
+    proc.on('error', (err) => {
+      handleClose(err instanceof Error ? err.message : String(err));
+    });
+    proc.on('close', (code) => {
+      const tail = daemon.stderrBuf
+        .trim()
+        .split('\n')
+        .filter((l) => l.trim() && !l.trim().startsWith('warning:'))
+        .slice(-3)
+        .join('\n');
+      handleClose(tail || `agy acp 종료됨 (code ${code ?? 0})`);
+    });
+
+    // Perform JSON-RPC `initialize` handshake
+    void this.sendRequest(daemon, 'initialize', {
+      protocolVersion: 1,
+      clientCapabilities: {},
+      clientInfo: { name: 'agy-desk', version: '0.1.0' },
+    })
+      .then(() => resolveInit())
+      .catch((err) => {
+        const e = err instanceof Error ? err : new Error(String(err));
+        rejectInit(e);
+        this.shutdownDaemon(key);
+      });
+
+    await initPromise;
+    return daemon;
+  }
+
+  private shutdownDaemon(key: DaemonKey): void {
+    const daemon = this.daemons.get(key);
+    if (!daemon) return;
+    this.daemons.delete(key);
+    daemon.closed = true;
+    try {
+      if (!daemon.proc.killed) daemon.proc.kill('SIGTERM');
+    } catch {
+      // ignore
+    }
+    for (const [tabId, binding] of [...this.tabBindings.entries()]) {
+      if (binding.daemonKey !== key) continue;
+      this.sessionToTab.delete(binding.sessionId);
+      this.tabBindings.delete(tabId);
+    }
+  }
+
+  private sendRequest(
+    daemon: AcpDaemon,
+    method: string,
+    params: Record<string, unknown>
+  ): Promise<unknown> {
+    if (daemon.closed || !daemon.proc.stdin?.writable) {
+      return Promise.reject(new Error('agy acp 프로세스가 연결되어 있지 않습니다.'));
+    }
+    const id = daemon.nextId++;
+    return new Promise((resolve, reject) => {
+      daemon.pending.set(id, { resolve, reject });
+      const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
+      try {
+        daemon.proc.stdin!.write(payload);
+      } catch (err) {
+        daemon.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
+  private sendNotification(
+    daemon: AcpDaemon,
+    method: string,
+    params: Record<string, unknown>
+  ): void {
+    if (daemon.closed || !daemon.proc.stdin?.writable) return;
+    try {
+      daemon.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
     } catch {
       // ignore
     }
   }
+
+  private sendJsonRpcResponse(daemon: AcpDaemon, id: number | string, result: unknown): void {
+    if (daemon.closed || !daemon.proc.stdin?.writable) return;
+    try {
+      daemon.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+    } catch {
+      // ignore
+    }
+  }
+
+  private sendJsonRpcError(
+    daemon: AcpDaemon,
+    id: number | string,
+    code: number,
+    message: string
+  ): void {
+    if (daemon.closed || !daemon.proc.stdin?.writable) return;
+    try {
+      daemon.proc.stdin.write(
+        JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n'
+      );
+    } catch {
+      // ignore
+    }
+  }
+
+  private handleAcpMessage(daemon: AcpDaemon, msg: Record<string, unknown>): void {
+    const hasId = msg.id !== undefined && msg.id !== null;
+    const method = typeof msg.method === 'string' ? msg.method : '';
+
+    // 1. JSON-RPC Response to our request
+    if (hasId && !method) {
+      const idNum = Number(msg.id);
+      const pending = daemon.pending.get(idNum);
+      if (!pending) return;
+      daemon.pending.delete(idNum);
+      if (msg.error && typeof msg.error === 'object') {
+        const errObj = msg.error as Record<string, unknown>;
+        const errMsg =
+          typeof errObj.message === 'string' ? errObj.message : JSON.stringify(errObj);
+        pending.reject(new Error(errMsg));
+      } else {
+        pending.resolve(msg.result);
+      }
+      return;
+    }
+
+    // 2. Server -> Client Request (e.g., `session/request_permission`)
+    if (hasId && method) {
+      if (method === 'session/request_permission') {
+        this.handlePermissionRequest(
+          daemon,
+          msg.id as number | string,
+          (msg.params || {}) as Record<string, unknown>
+        );
+        return;
+      }
+      this.sendJsonRpcError(daemon, msg.id as number | string, -32601, `Unsupported method: ${method}`);
+      return;
+    }
+
+    // 3. Server Notification (`session/update`)
+    if (method === 'session/update') {
+      const params = (msg.params || {}) as Record<string, unknown>;
+      const sessionId = typeof params.sessionId === 'string' ? params.sessionId : '';
+      const update =
+        params.update && typeof params.update === 'object'
+          ? (params.update as Record<string, unknown>)
+          : null;
+      if (update) {
+        this.handleSessionUpdate(sessionId, update);
+      }
+    }
+  }
+
+  private handlePermissionRequest(
+    daemon: AcpDaemon,
+    rpcId: number | string,
+    params: Record<string, unknown>
+  ): void {
+    const sessionId = typeof params.sessionId === 'string' ? params.sessionId : '';
+    const tabSessionId = this.sessionToTab.get(sessionId);
+    const binding = tabSessionId ? this.tabBindings.get(tabSessionId) : undefined;
+
+    const rawOptions = Array.isArray(params.options) ? params.options : [];
+    const options: PermissionOption[] = rawOptions
+      .filter((o): o is Record<string, unknown> => Boolean(o && typeof o === 'object'))
+      .map((o) => ({
+        optionId: String(o.optionId || ''),
+        name: String(o.name || o.optionId || '허용'),
+        kind: typeof o.kind === 'string' ? o.kind : undefined,
+      }))
+      .filter((o) => Boolean(o.optionId));
+
+    // In `turbo` mode, auto-approve seamlessly without interrupting the user
+    if (!binding || binding.mode === 'turbo') {
+      const allowOpt =
+        options.find((o) => o.kind === 'allow_once' || o.optionId === 'allow') ||
+        options.find((o) => o.kind === 'allow_always') ||
+        options[0];
+      if (allowOpt) {
+        this.sendJsonRpcResponse(daemon, rpcId, {
+          outcome: { outcome: 'selected', optionId: allowOpt.optionId },
+        });
+      } else {
+        this.sendJsonRpcResponse(daemon, rpcId, { outcome: { outcome: 'cancelled' } });
+      }
+      return;
+    }
+
+    const tc =
+      params.toolCall && typeof params.toolCall === 'object'
+        ? (params.toolCall as Record<string, unknown>)
+        : {};
+    const toolName = String(tc.name || 'tool');
+    const title = String(tc.title || toolName);
+    const rawInputObj = tc.rawInput ?? tc.args;
+    const argsSummary = summarizeToolArgs(toolName, title, rawInputObj);
+    let rawInput: string | undefined;
+    if (rawInputObj && typeof rawInputObj === 'object') {
+      try {
+        rawInput = JSON.stringify(rawInputObj, null, 2).slice(0, 1200);
+      } catch {
+        rawInput = undefined;
+      }
+    }
+
+    const requestId = `perm-${rpcId}-${Date.now().toString(36)}`;
+    this.pendingPermissions.set(requestId, {
+      requestId,
+      rpcId,
+      daemon,
+      tabSessionId: binding.tabSessionId,
+      sessionId,
+    });
+
+    this.emit({
+      type: 'permission_request',
+      tabSessionId: binding.tabSessionId,
+      request: {
+        requestId,
+        toolName,
+        title,
+        argsSummary,
+        rawInput,
+        options,
+      },
+    });
+  }
+
+  private handleSessionUpdate(sessionId: string, update: Record<string, unknown>): void {
+    const updateType = typeof update.sessionUpdate === 'string' ? update.sessionUpdate : '';
+
+    // Available slash commands & active skills apply globally to all chat panes
+    if (updateType === 'available_commands_update') {
+      const rawCmds = Array.isArray(update.availableCommands) ? update.availableCommands : [];
+      const parsed = rawCmds
+        .filter((c): c is Record<string, unknown> => Boolean(c && typeof c === 'object'))
+        .map((c) => ({
+          name: String(c.name || '').trim(),
+          description: String(c.description || '').trim(),
+        }))
+        .filter((c) => Boolean(c.name));
+      if (parsed.length > 0) {
+        this.cachedCommands = parsed;
+        this.emit({ type: 'commands_update', commands: parsed });
+      }
+      return;
+    }
+
+    const tabSessionId = this.sessionToTab.get(sessionId);
+    if (!tabSessionId) return;
+    const binding = this.tabBindings.get(tabSessionId);
+    if (!binding) return;
+
+    if (updateType === 'session_info_update') {
+      const title = typeof update.title === 'string' ? update.title.trim() : '';
+      if (title) {
+        registerOwnSession({ conversationId: sessionId, title, cwd: binding.cwd });
+        this.emit({ type: 'session_title', tabSessionId, title });
+      }
+      return;
+    }
+
+    if (updateType === 'usage_update') {
+      const used = Number(update.used || 0);
+      const size = Number(update.size || 0);
+      if (used > 0 || size > 0) {
+        this.emit({ type: 'usage_delta', tabSessionId, used, size });
+      }
+      return;
+    }
+
+    if (updateType === 'agent_thought_chunk') {
+      const content =
+        update.content && typeof update.content === 'object'
+          ? (update.content as Record<string, unknown>)
+          : null;
+      const text = typeof content?.text === 'string' ? content.text : '';
+      if (text) {
+        this.emit({ type: 'thinking_delta', tabSessionId, delta: text });
+      }
+      return;
+    }
+
+    if (updateType === 'agent_message_chunk') {
+      const content =
+        update.content && typeof update.content === 'object'
+          ? (update.content as Record<string, unknown>)
+          : null;
+      const text = typeof content?.text === 'string' ? content.text : '';
+      if (text) {
+        this.emit({ type: 'text_delta', tabSessionId, delta: text });
+      }
+      return;
+    }
+
+    if (updateType === 'tool_call' || updateType === 'tool_call_update') {
+      const toolId = String(update.toolCallId || `tool-${Date.now()}`);
+      const toolName = String(update.name || 'tool');
+      const title = typeof update.title === 'string' ? update.title : undefined;
+      const kind = typeof update.kind === 'string' ? update.kind : undefined;
+      const status = typeof update.status === 'string' ? update.status : '';
+      const rawArgs = update.args ?? update.rawInput;
+
+      // Special native Antigravity meta-tools: live focus & step checklist!
+      if (toolName === 'update_focus') {
+        const focusText =
+          rawArgs && typeof rawArgs === 'object'
+            ? String((rawArgs as Record<string, unknown>).focus || '').trim()
+            : '';
+        if (focusText) {
+          this.emit({ type: 'focus_update', tabSessionId, focus: focusText });
+        }
+        return;
+      }
+
+      if (toolName === 'update_steps') {
+        const steps = parseStepsPayload(rawArgs);
+        if (steps) {
+          this.emit({ type: 'steps_update', tabSessionId, steps });
+        }
+        return;
+      }
+
+      if (!binding.emittedToolIds.has(toolId)) {
+        binding.emittedToolIds.add(toolId);
+        this.emit({
+          type: 'tool_use',
+          tabSessionId,
+          tool: {
+            id: toolId,
+            name: toolName,
+            title,
+            kind,
+            argsSummary: summarizeToolArgs(toolName, title, rawArgs),
+            status: 'running',
+            startedAt: Date.now(),
+          },
+        });
+      }
+
+      if (status === 'completed' || status === 'failed' || update.rawOutput !== undefined) {
+        const outStr = formatToolOutput(update.rawOutput, update.content);
+        this.emit({
+          type: 'tool_result',
+          tabSessionId,
+          toolId,
+          output: outStr,
+          isError: status === 'failed',
+        });
+
+        this.ensureWatcher(binding);
+        const metrics = analyzeSingleSession(sessionId, this.quota.getCachedSnapshot());
+        if (metrics) {
+          this.emit({ type: 'metrics', tabSessionId, metrics });
+        }
+      }
+    }
+  }
+
+  private extractAvailableModels(res: Record<string, unknown>): AgyModelOption[] | null {
+    const modelsObj =
+      res?.models && typeof res.models === 'object'
+        ? (res.models as Record<string, unknown>)
+        : null;
+    const raw = Array.isArray(modelsObj?.availableModels) ? modelsObj!.availableModels : null;
+    if (!raw || raw.length === 0) return null;
+    const out: AgyModelOption[] = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') continue;
+      const rec = item as Record<string, unknown>;
+      const value = typeof rec.modelId === 'string' ? rec.modelId.trim() : '';
+      const label = typeof rec.name === 'string' ? rec.name.trim() : value;
+      if (value && !seen.has(value)) {
+        seen.add(value);
+        out.push({ value, label });
+      }
+    }
+    return out.length > 0 ? out : null;
+  }
+
+  private buildPromptBlocks(
+    prompt: string,
+    attachments?: string[]
+  ): Array<Record<string, unknown>> {
+    const blocks: Array<Record<string, unknown>> = [];
+    const nonImageRefs: string[] = [];
+
+    for (const filePath of attachments || []) {
+      if (!filePath) continue;
+      const ext = path.extname(filePath).toLowerCase();
+      const mimeType = IMAGE_MIME_BY_EXT[ext];
+      if (mimeType) {
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.isFile() && stat.size > 0 && stat.size <= MAX_INLINE_IMAGE_BYTES) {
+            const b64 = fs.readFileSync(filePath).toString('base64');
+            blocks.push({ type: 'image', mimeType, data: b64 });
+            continue;
+          }
+        } catch {
+          // fall back to path reference
+        }
+      }
+      nonImageRefs.push(`[첨부 파일: ${filePath}]`);
+    }
+
+    const finalText =
+      nonImageRefs.length > 0 ? `${nonImageRefs.join('\n')}\n\n${prompt}` : prompt;
+    blocks.push({ type: 'text', text: finalText });
+    return blocks;
+  }
+
+  private cancelPendingPermissionsForTab(tabSessionId: string): void {
+    let clearedAny = false;
+    for (const [reqId, pending] of [...this.pendingPermissions.entries()]) {
+      if (pending.tabSessionId !== tabSessionId) continue;
+      this.pendingPermissions.delete(reqId);
+      clearedAny = true;
+      if (!pending.daemon.closed) {
+        this.sendJsonRpcResponse(pending.daemon, pending.rpcId, {
+          outcome: { outcome: 'cancelled' },
+        });
+      }
+    }
+    if (clearedAny) {
+      this.emit({ type: 'permission_cleared', tabSessionId });
+    }
+  }
+
+  private ensureWatcher(binding: TabSessionBinding): void {
+    if (binding.hasActiveWatcher) return;
+    if (resolveTranscriptPath(binding.sessionId)) {
+      const initial = this.watchSession(binding.tabSessionId, binding.sessionId);
+      binding.hasActiveWatcher = true;
+      if (initial) {
+        this.emit({ type: 'metrics', tabSessionId: binding.tabSessionId, metrics: initial });
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // One-Shot Fallback (CLI-only meta commands: /usage, /help, /changelog)
+  // ---------------------------------------------------------------------------
 
   private killOneShot(tabSessionId: string): void {
     const proc = this.oneShotProcs.get(tabSessionId);
@@ -288,468 +1190,15 @@ export class AgyPluginBridge {
     }
   }
 
-  private buildCommonFlags(req: AgySendPromptRequest): { flags: string[]; cwd: string } {
-    const cfg = this.getConfig();
-    const flags: string[] = [];
-
-    const effectiveModel = req.model && req.model !== 'default' ? req.model : cfg.defaultModel;
-    const modelHasEmbeddedTier = Boolean(
-      req.model &&
-        req.model !== 'default' &&
-        /-(low|medium|high|xhigh|max)$/i.test(req.model)
-    );
-    const effectiveEffort =
-      req.effort && req.effort !== 'default'
-        ? req.effort
-        : modelHasEmbeddedTier
-          ? 'default'
-          : cfg.defaultEffort;
-    const hasExplicitEffort = Boolean(effectiveEffort && effectiveEffort !== 'default');
-
-    if (effectiveModel && effectiveModel !== 'default') {
-      const modelArg = hasExplicitEffort
-        ? effectiveModel.replace(/-(low|medium|high|xhigh|max)$/, '')
-        : effectiveModel;
-      flags.push('--model', modelArg);
-    }
-    if (hasExplicitEffort) {
-      flags.push('--effort', effectiveEffort);
-    }
-
-    const effectiveMode: ChatMode = req.mode || cfg.localPermission || 'turbo';
-    if (effectiveMode === 'turbo') {
-      flags.push('--dangerously-skip-permissions');
-    } else if (effectiveMode === 'strict') {
-      flags.push('--sandbox');
-    } else if (effectiveMode === 'plan' || effectiveMode === 'accept-edits' || effectiveMode === 'auto') {
-      flags.push('--mode', effectiveMode);
-    }
-
-    const allowedCommands = Array.isArray(cfg.allowedCommands) ? cfg.allowedCommands : [];
-    if (allowedCommands.length > 0) {
-      const allowRules = allowedCommands.map((cmd) => (cmd.includes('(') ? cmd : `command(${cmd})`));
-      flags.push('--settings', JSON.stringify({ permissions: { allow: allowRules } }));
-    }
-
-    const addDirs = Array.isArray(req.addDirs) ? req.addDirs : [];
-    for (const dir of addDirs) {
-      if (dir && fs.existsSync(dir)) {
-        flags.push('--add-dir', dir);
-      }
-    }
-
+  private sendOneShotCommand(req: AgySendPromptRequest): { ok: boolean; error?: string } {
+    this.killOneShot(req.tabSessionId);
+    const agyBin = resolveAgyBinary();
     const cwd = req.cwd && fs.existsSync(req.cwd) ? req.cwd : os.homedir();
-    return { flags, cwd };
-  }
-
-  private formatFinalPrompt(req: AgySendPromptRequest): string {
-    if (req.images && req.images.length > 0) {
-      const refs = req.images.map((img) => `[첨부 파일: ${img}]`).join('\n');
-      return `${refs}\n\n${req.prompt}`;
-    }
-    return req.prompt;
-  }
-
-  private ensureWorkerWatcher(worker: PersistentWorker, convId: string): void {
-    if (worker.hasActiveWatcher) return;
-    if (resolveTranscriptPath(convId)) {
-      const initial = this.watchSession(worker.tabSessionId, convId);
-      worker.hasActiveWatcher = true;
-      if (initial) {
-        this.emit({ type: 'metrics', tabSessionId: worker.tabSessionId, metrics: initial });
-      }
-    }
-  }
-
-  private handleWorkerJsonEvent(worker: PersistentWorker, obj: Record<string, unknown>): void {
-    if (worker.superseded || this.workers.get(worker.tabSessionId) !== worker) return;
-
-    const initObj =
-      obj.init && typeof obj.init === 'object' ? (obj.init as Record<string, unknown>) : undefined;
-    const stepObj =
-      obj.step_update && typeof obj.step_update === 'object'
-        ? (obj.step_update as Record<string, unknown>)
-        : undefined;
-    const resultObj =
-      obj.result && typeof obj.result === 'object'
-        ? (obj.result as Record<string, unknown>)
-        : undefined;
-
-    const convId =
-      (typeof obj.conversation_id === 'string' && obj.conversation_id) ||
-      (typeof stepObj?.conversation_id === 'string' && stepObj.conversation_id) ||
-      (typeof resultObj?.conversation_id === 'string' && resultObj.conversation_id) ||
-      (typeof obj.session_id === 'string' && obj.session_id) ||
-      (typeof obj.conversationId === 'string' && obj.conversationId) ||
-      null;
-
-    if (convId && convId !== worker.conversationId) {
-      worker.conversationId = convId;
-      registerOwnSession({
-        conversationId: convId,
-        title: (worker.turn?.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 40),
-        cwd: worker.cwd,
-      });
-      const initModel =
-        worker.turn?.requestedModel === 'default'
-          ? (typeof initObj?.model === 'string' && initObj.model) ||
-            (typeof obj.model === 'string' && obj.model) ||
-            undefined
-          : undefined;
-      this.emit({
-        type: 'session_init',
-        tabSessionId: worker.tabSessionId,
-        agyConversationId: convId,
-        model: initModel,
-      });
-      this.ensureWorkerWatcher(worker, convId);
-    } else if (worker.conversationId && !worker.hasActiveWatcher) {
-      this.ensureWorkerWatcher(worker, worker.conversationId);
-    }
-
-    const agyEvent = typeof obj.event === 'string' ? obj.event : '';
-    const turn = worker.turn;
-
-    if (agyEvent === 'init') return;
-
-    if (agyEvent === 'step_update' && stepObj) {
-      const thinkingDelta =
-        typeof stepObj.thinking_delta === 'string'
-          ? stepObj.thinking_delta
-          : typeof stepObj.thinking === 'string'
-            ? stepObj.thinking
-            : '';
-      if (thinkingDelta) {
-        this.emit({ type: 'thinking_delta', tabSessionId: worker.tabSessionId, delta: thinkingDelta });
-      }
-
-      if (typeof stepObj.text_delta === 'string' && stepObj.text_delta) {
-        if (turn) turn.emittedAnyText = true;
-        this.emit({ type: 'text_delta', tabSessionId: worker.tabSessionId, delta: stepObj.text_delta });
-      }
-
-      const stepType = String(stepObj.step_type || '');
-      const stepState = String(stepObj.state || '');
-      if (stepType === 'checkpoint' && turn) {
-        turn.sawCheckpoint = true;
-      }
-
-      const toolInfo =
-        stepObj.tool_info && typeof stepObj.tool_info === 'object'
-          ? (stepObj.tool_info as Record<string, unknown>)
-          : undefined;
-      const subagentInfo =
-        stepObj.subagent_info && typeof stepObj.subagent_info === 'object'
-          ? (stepObj.subagent_info as Record<string, unknown>)
-          : undefined;
-
-      if (stepType === 'tool' || toolInfo) {
-        const toolId =
-          typeof stepObj.step_index === 'number'
-            ? `step-${stepObj.step_index}`
-            : `tool-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
-        const toolName = String(toolInfo?.name || stepObj.tool_name || 'tool');
-        const params = toolInfo?.parameters ?? toolInfo?.input ?? toolInfo?.args;
-
-        if (turn && !turn.emittedToolIds.has(toolId)) {
-          turn.emittedToolIds.add(toolId);
-          this.emit({
-            type: 'tool_use',
-            tabSessionId: worker.tabSessionId,
-            tool: {
-              id: toolId,
-              name: toolName,
-              argsSummary: summarizeInput(params),
-              status: 'running',
-            },
-          });
-        }
-
-        const hasToolError = Boolean(toolInfo?.error);
-        const hasToolOutput = toolInfo?.output !== undefined;
-        if (stepState === 'DONE' || stepState === 'ERROR' || hasToolError || hasToolOutput) {
-          const errObj =
-            toolInfo?.error && typeof toolInfo.error === 'object'
-              ? (toolInfo.error as Record<string, unknown>)
-              : undefined;
-          const outStr = errObj
-            ? typeof errObj.message === 'string'
-              ? errObj.message
-              : JSON.stringify(errObj)
-            : typeof toolInfo?.output === 'string'
-              ? toolInfo.output
-              : toolInfo?.output != null
-                ? JSON.stringify(toolInfo.output)
-                : '';
-          this.emit({
-            type: 'tool_result',
-            tabSessionId: worker.tabSessionId,
-            toolId,
-            output: outStr.slice(0, 600),
-            isError: hasToolError || stepState === 'ERROR',
-          });
-        }
-      } else if (subagentInfo) {
-        const toolId =
-          typeof stepObj.step_index === 'number'
-            ? `subagent-${stepObj.step_index}`
-            : `subagent-${Date.now()}`;
-        const subs = Array.isArray(subagentInfo.subagents)
-          ? (subagentInfo.subagents as Array<Record<string, unknown>>)
-          : [];
-        const summary = subs
-          .map((s) => String(s.role || s.type_name || 'subagent'))
-          .filter(Boolean)
-          .join(', ');
-        if (turn && !turn.emittedToolIds.has(toolId)) {
-          turn.emittedToolIds.add(toolId);
-          this.emit({
-            type: 'tool_use',
-            tabSessionId: worker.tabSessionId,
-            tool: {
-              id: toolId,
-              name: String(stepObj.tool_name || 'subagent'),
-              argsSummary: summary.slice(0, 48),
-              status: 'running',
-            },
-          });
-        }
-        if (stepState === 'DONE' || stepState === 'ERROR') {
-          this.emit({
-            type: 'tool_result',
-            tabSessionId: worker.tabSessionId,
-            toolId,
-            output: summary,
-            isError: stepState === 'ERROR',
-          });
-        }
-      }
-
-      if (stepState === 'DONE' && worker.conversationId) {
-        this.ensureWorkerWatcher(worker, worker.conversationId);
-        const metrics = analyzeSingleSession(worker.conversationId, this.quota.getCachedSnapshot());
-        if (metrics) this.emit({ type: 'metrics', tabSessionId: worker.tabSessionId, metrics });
-      }
-      return;
-    }
-
-    if (agyEvent === 'result') {
-      const res = resultObj || obj;
-      const status = typeof res.status === 'string' ? res.status : '';
-      let errText: string | undefined;
-      if (status && status !== 'SUCCESS') {
-        errText =
-          (typeof res.error === 'string' && res.error) || `agy exited with status ${status}`;
-        if (turn) turn.resultError = errText;
-      }
-
-      if (turn && !turn.emittedAnyText) {
-        const outText =
-          typeof res.response === 'string'
-            ? res.response
-            : typeof res.output === 'string'
-              ? res.output
-              : '';
-        if (outText) {
-          turn.emittedAnyText = true;
-          this.emit({ type: 'text_delta', tabSessionId: worker.tabSessionId, delta: outText });
-        } else if (!errText && (turn.sawCheckpoint || turn.prompt.trim().startsWith('/compact'))) {
-          turn.emittedAnyText = true;
-          this.emit({
-            type: 'text_delta',
-            tabSessionId: worker.tabSessionId,
-            delta: '컨텍스트가 압축되었습니다.',
-          });
-        }
-      }
-
-      if (worker.conversationId) {
-        registerOwnSession({ conversationId: worker.conversationId, cwd: worker.cwd });
-        this.ensureWorkerWatcher(worker, worker.conversationId);
-        const metrics = analyzeSingleSession(worker.conversationId, this.quota.getCachedSnapshot());
-        if (metrics) this.emit({ type: 'metrics', tabSessionId: worker.tabSessionId, metrics });
-      }
-
-      if (worker.inTurn) {
-        worker.inTurn = false;
-        worker.turn = null;
-        worker.stderrBuf = '';
-        this.emit({
-          type: 'done',
-          tabSessionId: worker.tabSessionId,
-          exitCode: errText ? 1 : 0,
-          error: worker.authEmitted ? undefined : errText,
-        });
-      }
-    }
-  }
-
-  private spawnPersistentWorker(
-    req: AgySendPromptRequest,
-    flags: string[],
-    cwd: string,
-    configKey: string
-  ): { ok: true; worker: PersistentWorker } | { ok: false; error: string } {
-    const agyBin = resolveAgyBinary();
-    const args = ['--input-format', 'stream-json', '--output-format', 'stream-json', ...flags];
+    const args = ['--output-format', 'stream-json'];
     if (req.agyConversationId) {
       args.push('--conversation', req.agyConversationId);
     }
-
-    let proc: ChildProcess;
-    try {
-      proc = spawn(agyBin, args, {
-        cwd,
-        env: buildAgySpawnEnv(),
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-
-    proc.stdin?.on('error', () => {
-      // ignore EPIPE
-    });
-
-    const worker: PersistentWorker = {
-      tabSessionId: req.tabSessionId,
-      proc,
-      configKey,
-      conversationId: req.agyConversationId,
-      cwd,
-      hasActiveWatcher: Boolean(req.agyConversationId && resolveTranscriptPath(req.agyConversationId)),
-      inTurn: false,
-      authEmitted: false,
-      lineBuf: '',
-      stderrBuf: '',
-      turn: null,
-      closed: false,
-      superseded: false,
-    };
-
-    this.workers.set(req.tabSessionId, worker);
-
-    const checkAuth = (chunk: string) => {
-      if (worker.authEmitted) return;
-      const urlMatch = chunk.match(/https:\/\/accounts\.google\.com\/o\/oauth2\/auth[^\s]+/);
-      if (urlMatch) {
-        worker.authEmitted = true;
-        this.emit({
-          type: 'auth_required',
-          tabSessionId: worker.tabSessionId,
-          url: urlMatch[0],
-          message: 'agy CLI Google 로그인이 필요합니다. 브라우저에서 인증 후 코드를 붙여넣으세요.',
-        });
-      }
-    };
-
-    const flushLineBuf = () => {
-      const rem = worker.lineBuf.trim();
-      worker.lineBuf = '';
-      if (rem && rem.startsWith('{')) {
-        try {
-          this.handleWorkerJsonEvent(worker, JSON.parse(rem) as Record<string, unknown>);
-        } catch {
-          // ignore non-JSON debug line
-        }
-      }
-    };
-
-    const handleWorkerExit = (code: number, spawnErr?: string) => {
-      if (worker.closed) return;
-      worker.closed = true;
-      if (worker.superseded) return;
-      flushLineBuf();
-      if (this.workers.get(worker.tabSessionId) === worker) {
-        this.workers.delete(worker.tabSessionId);
-      }
-      if (!worker.inTurn) return;
-
-      const lastErr = worker.turn?.resultError || null;
-      worker.inTurn = false;
-      worker.turn = null;
-
-      if (worker.conversationId) {
-        registerOwnSession({ conversationId: worker.conversationId, cwd: worker.cwd });
-        this.ensureWorkerWatcher(worker, worker.conversationId);
-        const metrics = analyzeSingleSession(worker.conversationId, this.quota.getCachedSnapshot());
-        if (metrics) this.emit({ type: 'metrics', tabSessionId: worker.tabSessionId, metrics });
-      }
-
-      let errText: string | undefined;
-      if (spawnErr) {
-        errText = spawnErr;
-      } else if (lastErr && !worker.authEmitted) {
-        errText = lastErr;
-      } else if (code !== 0 && !worker.authEmitted) {
-        const filtered = worker.stderrBuf
-          .trim()
-          .split('\n')
-          .filter((l) => l.trim() && !l.trim().startsWith('warning:'));
-        errText =
-          filtered.slice(-4).join('\n') ||
-          worker.stderrBuf.trim().split('\n').slice(-4).join('\n') ||
-          `agy exited with code ${code}`;
-      }
-
-      this.emit({
-        type: 'done',
-        tabSessionId: worker.tabSessionId,
-        exitCode: code,
-        error: errText,
-      });
-    };
-
-    proc.stdout?.on('data', (buf: Buffer) => {
-      const chunk = buf.toString('utf8');
-      checkAuth(chunk);
-      worker.lineBuf += chunk;
-      let nl = worker.lineBuf.indexOf('\n');
-      while (nl !== -1) {
-        const line = worker.lineBuf.slice(0, nl).trim();
-        worker.lineBuf = worker.lineBuf.slice(nl + 1);
-        if (line && line.startsWith('{')) {
-          try {
-            this.handleWorkerJsonEvent(worker, JSON.parse(line) as Record<string, unknown>);
-          } catch {
-            // ignore non-JSON debug line
-          }
-        }
-        nl = worker.lineBuf.indexOf('\n');
-      }
-    });
-
-    proc.stderr?.on('data', (buf: Buffer) => {
-      const chunk = buf.toString('utf8');
-      worker.stderrBuf += chunk;
-      checkAuth(chunk);
-    });
-
-    proc.on('error', (err) => {
-      handleWorkerExit(1, err instanceof Error ? err.message : String(err));
-    });
-
-    proc.on('close', (code) => {
-      handleWorkerExit(code ?? 0);
-    });
-
-    return { ok: true, worker };
-  }
-
-  private sendOneShotCommand(
-    req: AgySendPromptRequest,
-    flags: string[],
-    cwd: string,
-    finalPrompt: string
-  ): { ok: boolean; error?: string } {
-    this.cancelTurn(req.tabSessionId);
-
-    const agyBin = resolveAgyBinary();
-    const args = ['--output-format', 'stream-json', ...flags];
-    if (req.agyConversationId) {
-      args.push('--conversation', req.agyConversationId);
-    }
-    args.push(`-p=${finalPrompt}`);
+    args.push(`-p=${req.prompt.trim()}`);
 
     let child: ChildProcess;
     try {
@@ -781,7 +1230,11 @@ export class AgyPluginBridge {
           obj.result && typeof obj.result === 'object'
             ? (obj.result as Record<string, unknown>)
             : undefined;
-        if (obj.event === 'step_update' && typeof stepObj?.text_delta === 'string' && stepObj.text_delta) {
+        if (
+          obj.event === 'step_update' &&
+          typeof stepObj?.text_delta === 'string' &&
+          stepObj.text_delta
+        ) {
           emittedAnyText = true;
           this.emit({ type: 'text_delta', tabSessionId: req.tabSessionId, delta: stepObj.text_delta });
         } else if (obj.event === 'result' && resultObj) {

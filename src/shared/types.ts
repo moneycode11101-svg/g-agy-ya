@@ -70,11 +70,27 @@ export interface PaneGroup {
 export interface ToolCallItem {
   id: string;
   name: string;
+  title?: string;
+  kind?: string;
   argsSummary: string;
   outputPreview?: string;
   status: 'running' | 'done' | 'error';
   deltaTokens?: number;
+  startedAt?: number;
+  endedAt?: number;
 }
+
+export interface ChatStepItem {
+  title: string;
+  status: 'pending' | 'in_progress' | 'done' | 'skipped' | 'failed';
+}
+
+export type ChatBlock =
+  | { id: string; type: 'thinking'; text: string; startedAt: number; endedAt?: number }
+  | { id: string; type: 'tool'; tool: ToolCallItem }
+  | { id: string; type: 'text'; text: string }
+  | { id: string; type: 'steps'; items: ChatStepItem[] }
+  | { id: string; type: 'plan'; text: string };
 
 export interface ChatMessage {
   id: string;
@@ -82,8 +98,11 @@ export interface ChatMessage {
   text: string;
   thinking?: string;
   tools?: ToolCallItem[];
+  blocks?: ChatBlock[];
+  focus?: string;
   images?: string[]; // file paths attached
   createdAt: number;
+  endedAt?: number;
   streaming?: boolean;
 }
 
@@ -104,8 +123,8 @@ export interface TurnHistoryItem {
   cacheMiss: boolean;
 }
 
-export type QuotaGroupKey = 'gemini' | 'claude';
-export type QuotaWindow = '5h' | 'weekly';
+export type QuotaGroupKey = 'gemini' | 'claude' | 'codex';
+export type QuotaWindow = '5h' | 'weekly' | 'monthly';
 
 export interface QuotaBucket {
   id: string;
@@ -118,6 +137,7 @@ export interface QuotaBucket {
 }
 
 export interface AccountQuotaSnapshot {
+  adapterId?: string;
   buckets: QuotaBucket[];
   updatedAt: string | null;
   error?: string;
@@ -147,11 +167,13 @@ export interface SessionMetrics {
 }
 
 export interface SessionSummary {
+  adapterId?: string;
   conversationId: string;
   source: 'cli' | 'app';
   title: string;
   projectId: string;
   projectLabel: string;
+  cwd?: string;
   updatedAt: number;
   currentContext: number;
   model: string;
@@ -162,15 +184,63 @@ export interface AuthPrompt {
   message: string;
 }
 
+export interface PermissionOption {
+  optionId: string;
+  name: string;
+  kind?: string;
+}
+
+export interface PermissionPrompt {
+  requestId: string;
+  toolName: string;
+  title: string;
+  argsSummary: string;
+  rawInput?: string;
+  options: PermissionOption[];
+}
+
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface QuestionItem {
+  id: string;
+  header: string;
+  question: string;
+  options?: QuestionOption[];
+  multiSelect?: boolean;
+  isSecret?: boolean;
+}
+
+export interface QuestionPrompt {
+  requestId: string;
+  questions: QuestionItem[];
+}
+
 export type AgyEvent =
-  | { type: 'session_init'; tabSessionId: string; agyConversationId: string; model?: string }
-  | { type: 'text_delta'; tabSessionId: string; delta: string }
-  | { type: 'thinking_delta'; tabSessionId: string; delta: string }
-  | { type: 'tool_use'; tabSessionId: string; tool: ToolCallItem }
-  | { type: 'tool_result'; tabSessionId: string; toolId: string; output: string; isError?: boolean }
-  | { type: 'auth_required'; tabSessionId: string; url: string; message: string }
-  | { type: 'metrics'; tabSessionId: string; metrics: SessionMetrics }
-  | { type: 'done'; tabSessionId: string; exitCode: number; error?: string };
+  | { type: 'session_init'; adapterId?: string; tabSessionId: string; agyConversationId: string; model?: string }
+  | { type: 'session_title'; adapterId?: string; tabSessionId: string; title: string }
+  | { type: 'commands_update'; adapterId?: string; commands: Array<{ name: string; description: string }> }
+  | { type: 'text_delta'; adapterId?: string; tabSessionId: string; delta: string }
+  | { type: 'thinking_delta'; adapterId?: string; tabSessionId: string; delta: string }
+  | { type: 'focus_update'; adapterId?: string; tabSessionId: string; focus: string }
+  | { type: 'steps_update'; adapterId?: string; tabSessionId: string; steps: ChatStepItem[] }
+  | { type: 'plan_proposed'; adapterId?: string; tabSessionId: string; plan: string }
+  | { type: 'tool_use'; adapterId?: string; tabSessionId: string; tool: ToolCallItem }
+  | { type: 'tool_delta'; adapterId?: string; tabSessionId: string; toolId: string; delta: string }
+  | { type: 'tool_result'; adapterId?: string; tabSessionId: string; toolId: string; output: string; isError?: boolean }
+  | { type: 'permission_request'; adapterId?: string; tabSessionId: string; request: PermissionPrompt }
+  | { type: 'permission_cleared'; adapterId?: string; tabSessionId: string; requestId?: string }
+  | { type: 'question_request'; adapterId?: string; tabSessionId: string; request: QuestionPrompt }
+  | { type: 'question_cleared'; adapterId?: string; tabSessionId: string; requestId?: string }
+  | { type: 'usage_delta'; adapterId?: string; tabSessionId: string; used: number; size: number }
+  | { type: 'notice'; adapterId?: string; tabSessionId: string; level: 'info' | 'warn' | 'error'; text: string }
+  | { type: 'auth_required'; adapterId?: string; tabSessionId: string; url: string; message: string }
+  | { type: 'metrics'; adapterId?: string; tabSessionId: string; metrics: SessionMetrics }
+  | { type: 'done'; adapterId?: string; tabSessionId: string; exitCode: number; error?: string };
+
+export type AgentEvent = AgyEvent;
 
 export interface GitDiffFile {
   status: string;

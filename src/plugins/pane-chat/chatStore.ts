@@ -3,8 +3,10 @@ import type {
   AccountQuotaSnapshot,
   AgyEvent,
   AuthPrompt,
+  ChatBlock,
   ChatMessage,
   ChatMode,
+  PermissionPrompt,
   SessionMetrics,
 } from '../../shared/types';
 import {
@@ -15,6 +17,18 @@ import {
 
 function uid(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function closeOpenThinkingBlocks(blocks: ChatBlock[], now: number): ChatBlock[] {
+  let changed = false;
+  const next = blocks.map((b) => {
+    if (b.type === 'thinking' && !b.endedAt) {
+      changed = true;
+      return { ...b, endedAt: now };
+    }
+    return b;
+  });
+  return changed ? next : blocks;
 }
 
 export interface ChatTabState extends Record<string, unknown> {
@@ -37,20 +51,30 @@ export interface ChatRuntimeBridgeCallbacks {
   getPendingMessageMode: () => 'queue' | 'immediate';
   updateTabStateBySession: (tabSessionId: string, patch: Partial<ChatTabState>) => void;
   updateTabTitleIfDefault: (groupId: string, tabId: string, prompt: string) => void;
+  updateTabTitleBySession: (tabSessionId: string, title: string) => void;
   findTabBySessionId: (tabSessionId: string) => { groupId: string; tabId: string; state: ChatTabState } | null;
+}
+
+export interface QueuedPromptItem {
+  id: string;
+  prompt: string;
+  images?: string[];
+  createdAt: number;
 }
 
 export interface ChatSessionStoreState {
   messagesBySession: Record<string, ChatMessage[]>;
   metricsBySession: Record<string, SessionMetrics>;
   runningSessions: Record<string, boolean>;
-  queuedPromptsBySession: Record<string, Array<{ prompt: string; images?: string[] }>>;
+  queuedPromptsBySession: Record<string, QueuedPromptItem[]>;
   authPrompts: Record<string, AuthPrompt>;
+  permissionPrompts: Record<string, PermissionPrompt>;
   errorsBySession: Record<string, string>;
   accountQuota: AccountQuotaSnapshot | null;
   loadingQuota: boolean;
   adapterAvailable: boolean;
   availableModels: AgyModelOption[];
+  availableCommands: Array<{ name: string; description: string }>;
   callbacks: ChatRuntimeBridgeCallbacks | null;
 
   setCallbacks: (cbs: ChatRuntimeBridgeCallbacks | null) => void;
@@ -62,17 +86,19 @@ export interface ChatSessionStoreState {
   hydrateSession: (tabSessionId: string, messages: ChatMessage[], metrics?: SessionMetrics | null) => void;
   setSessionMetrics: (tabSessionId: string, metrics: SessionMetrics) => void;
   sendPrompt: (groupId: string, tabId: string, state: ChatTabState, prompt: string, images?: string[]) => Promise<void>;
+  removeQueuedPrompt: (tabSessionId: string, queueId: string) => void;
   clearQueuedPrompts: (tabSessionId: string) => void;
   cancelTurn: (tabSessionId: string) => Promise<void>;
   submitAuthCode: (tabSessionId: string, code: string) => Promise<void>;
+  respondPermission: (tabSessionId: string, requestId: string, optionId: string | null) => Promise<void>;
   handleAgyEvent: (ev: AgyEvent) => void;
   cleanupSession: (tabSessionId: string) => void;
 }
 
 /**
  * Session & streaming store owned by `pane-chat`.
- * Keeps `metricsBySession` and `accountQuota` synced directly from `agent-agy` events
- * so `warnOnCacheReset` remains 100% functional even when `hud-token-bar` is disabled!
+ * Maintains chronological `blocks` (thinking, tools, steps, text), interactive permission prompts,
+ * live official commands, and `metricsBySession` synced directly from `agent-agy` ACP events.
  */
 export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => ({
   messagesBySession: {},
@@ -80,11 +106,13 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
   runningSessions: {},
   queuedPromptsBySession: {},
   authPrompts: {},
+  permissionPrompts: {},
   errorsBySession: {},
   accountQuota: null,
   loadingQuota: false,
   adapterAvailable: true,
   availableModels: FALLBACK_AGY_MODELS,
+  availableCommands: [],
   callbacks: null,
 
   setCallbacks: (callbacks) => set({ callbacks }),
@@ -155,7 +183,10 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
         set((prev) => ({
           queuedPromptsBySession: {
             ...prev.queuedPromptsBySession,
-            [sid]: [...(prev.queuedPromptsBySession[sid] || []), { prompt: trimmed, images }],
+            [sid]: [
+              ...(prev.queuedPromptsBySession[sid] || []),
+              { id: uid('q'), prompt: trimmed, images, createdAt: Date.now() },
+            ],
           },
         }));
         return;
@@ -163,19 +194,21 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       await get().cancelTurn(sid);
     }
 
+    const now = Date.now();
     const userMsg: ChatMessage = {
       id: uid('u'),
       role: 'user',
       text: trimmed,
       images: images && images.length > 0 ? images : undefined,
-      createdAt: Date.now(),
+      createdAt: now,
     };
     const assistantMsg: ChatMessage = {
       id: uid('a'),
       role: 'assistant',
       text: '',
       tools: [],
-      createdAt: Date.now(),
+      blocks: [],
+      createdAt: now,
       streaming: true,
     };
 
@@ -208,20 +241,45 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       });
 
       if (res && !res.ok) {
-        set((prev) => ({
-          runningSessions: { ...prev.runningSessions, [sid]: false },
-          errorsBySession: { ...prev.errorsBySession, [sid]: res.error || '실행 실패' },
-        }));
+        set((prev) => {
+          const list = (prev.messagesBySession[sid] || []).map((m) =>
+            m.streaming ? { ...m, streaming: false, endedAt: Date.now() } : m
+          );
+          return {
+            messagesBySession: { ...prev.messagesBySession, [sid]: list },
+            runningSessions: { ...prev.runningSessions, [sid]: false },
+            errorsBySession: { ...prev.errorsBySession, [sid]: res.error || '실행 실패' },
+          };
+        });
       }
     } catch (err) {
-      set((prev) => ({
-        runningSessions: { ...prev.runningSessions, [sid]: false },
-        errorsBySession: {
-          ...prev.errorsBySession,
-          [sid]: err instanceof Error ? err.message : '에이전트 어댑터(agent-agy)가 비활성화되어 있습니다.',
-        },
-      }));
+      set((prev) => {
+        const list = (prev.messagesBySession[sid] || []).map((m) =>
+          m.streaming ? { ...m, streaming: false, endedAt: Date.now() } : m
+        );
+        return {
+          messagesBySession: { ...prev.messagesBySession, [sid]: list },
+          runningSessions: { ...prev.runningSessions, [sid]: false },
+          errorsBySession: {
+            ...prev.errorsBySession,
+            [sid]: err instanceof Error ? err.message : '에이전트 어댑터(agent-agy)가 비활성화되어 있습니다.',
+          },
+        };
+      });
     }
+  },
+
+  removeQueuedPrompt: (tabSessionId, queueId) => {
+    set((prev) => {
+      const cur = prev.queuedPromptsBySession[tabSessionId] || [];
+      const next = cur.filter((q) => q.id !== queueId);
+      return {
+        queuedPromptsBySession: {
+          ...prev.queuedPromptsBySession,
+          [tabSessionId]: next,
+        },
+      };
+    });
   },
 
   clearQueuedPrompts: (tabSessionId) => {
@@ -241,13 +299,25 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
         // ignore if adapter disabled
       }
     }
+    const now = Date.now();
     set((prev) => {
       const msgs = (prev.messagesBySession[tabSessionId] || []).map((m) =>
-        m.streaming ? { ...m, streaming: false } : m
+        m.streaming
+          ? {
+              ...m,
+              streaming: false,
+              focus: undefined,
+              endedAt: now,
+              blocks: m.blocks ? closeOpenThinkingBlocks(m.blocks, now) : m.blocks,
+            }
+          : m
       );
+      const nextPerms = { ...prev.permissionPrompts };
+      delete nextPerms[tabSessionId];
       return {
         messagesBySession: { ...prev.messagesBySession, [tabSessionId]: msgs },
         runningSessions: { ...prev.runningSessions, [tabSessionId]: false },
+        permissionPrompts: nextPerms,
       };
     });
   },
@@ -269,7 +339,35 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     }
   },
 
+  respondPermission: async (tabSessionId, requestId, optionId) => {
+    const cbs = get().callbacks;
+    if (!cbs) return;
+    set((prev) => {
+      const next = { ...prev.permissionPrompts };
+      if (next[tabSessionId]?.requestId === requestId) {
+        delete next[tabSessionId];
+      }
+      return { permissionPrompts: next };
+    });
+    try {
+      await cbs.invokeRpc<boolean>(AGY_RPC.PERMISSION_RESPOND, {
+        tabSessionId,
+        requestId,
+        optionId,
+      });
+    } catch {
+      // ignore
+    }
+  },
+
   handleAgyEvent: (ev) => {
+    if (ev.type === 'commands_update') {
+      if (ev.commands.length > 0) {
+        set({ availableCommands: ev.commands });
+      }
+      return;
+    }
+
     const sid = ev.tabSessionId;
     const cbs = get().callbacks;
 
@@ -283,6 +381,11 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       return;
     }
 
+    if (ev.type === 'session_title') {
+      cbs?.updateTabTitleBySession(sid, ev.title);
+      return;
+    }
+
     if (ev.type === 'auth_required') {
       set((prev) => ({
         authPrompts: {
@@ -293,6 +396,27 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       return;
     }
 
+    if (ev.type === 'permission_request') {
+      set((prev) => ({
+        permissionPrompts: {
+          ...prev.permissionPrompts,
+          [sid]: ev.request,
+        },
+      }));
+      return;
+    }
+
+    if (ev.type === 'permission_cleared') {
+      set((prev) => {
+        if (!prev.permissionPrompts[sid]) return prev;
+        if (ev.requestId && prev.permissionPrompts[sid].requestId !== ev.requestId) return prev;
+        const next = { ...prev.permissionPrompts };
+        delete next[sid];
+        return { permissionPrompts: next };
+      });
+      return;
+    }
+
     if (ev.type === 'metrics') {
       set((prev) => ({
         metricsBySession: { ...prev.metricsBySession, [sid]: ev.metrics },
@@ -300,58 +424,205 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       return;
     }
 
-    if (ev.type === 'text_delta' || ev.type === 'thinking_delta') {
+    if (ev.type === 'usage_delta') {
+      set((prev) => {
+        const cur = prev.metricsBySession[sid];
+        if (!cur) return prev;
+        const win = ev.size > 0 ? ev.size : cur.contextWindow;
+        const usedPct = win > 0 ? Number(((ev.used / win) * 100).toFixed(1)) : cur.usedPct;
+        return {
+          metricsBySession: {
+            ...prev.metricsBySession,
+            [sid]: { ...cur, currentContext: ev.used, contextWindow: win, usedPct },
+          },
+        };
+      });
+      return;
+    }
+
+    if (ev.type === 'focus_update') {
       set((prev) => {
         const list = [...(prev.messagesBySession[sid] || [])];
         let last = list[list.length - 1];
         if (!last || last.role !== 'assistant') {
-          last = { id: uid('a'), role: 'assistant', text: '', tools: [], createdAt: Date.now(), streaming: true };
+          last = {
+            id: uid('a'),
+            role: 'assistant',
+            text: '',
+            tools: [],
+            blocks: [],
+            focus: ev.focus,
+            createdAt: Date.now(),
+            streaming: true,
+          };
           list.push(last);
         } else {
-          last = { ...last };
-          list[list.length - 1] = last;
+          list[list.length - 1] = { ...last, focus: ev.focus };
         }
-        if (ev.type === 'text_delta') last.text += ev.delta;
-        else last.thinking = (last.thinking || '') + ev.delta;
+        return { messagesBySession: { ...prev.messagesBySession, [sid]: list } };
+      });
+      return;
+    }
+
+    if (ev.type === 'steps_update') {
+      set((prev) => {
+        const list = [...(prev.messagesBySession[sid] || [])];
+        let last = list[list.length - 1];
+        if (!last || last.role !== 'assistant') {
+          last = {
+            id: uid('a'),
+            role: 'assistant',
+            text: '',
+            tools: [],
+            blocks: [{ id: uid('st'), type: 'steps', items: ev.steps }],
+            createdAt: Date.now(),
+            streaming: true,
+          };
+          list.push(last);
+        } else {
+          const blocks = [...(last.blocks || [])];
+          const existingIdx = blocks.findIndex((b) => b.type === 'steps');
+          if (existingIdx >= 0) {
+            blocks[existingIdx] = { ...blocks[existingIdx], type: 'steps', items: ev.steps };
+          } else {
+            blocks.push({ id: uid('st'), type: 'steps', items: ev.steps });
+          }
+          list[list.length - 1] = { ...last, blocks };
+        }
+        return { messagesBySession: { ...prev.messagesBySession, [sid]: list } };
+      });
+      return;
+    }
+
+    if (ev.type === 'thinking_delta') {
+      const now = Date.now();
+      set((prev) => {
+        const list = [...(prev.messagesBySession[sid] || [])];
+        let last = list[list.length - 1];
+        if (!last || last.role !== 'assistant') {
+          last = {
+            id: uid('a'),
+            role: 'assistant',
+            text: '',
+            thinking: ev.delta,
+            tools: [],
+            blocks: [{ id: uid('th'), type: 'thinking', text: ev.delta, startedAt: now }],
+            createdAt: now,
+            streaming: true,
+          };
+          list.push(last);
+        } else {
+          const blocks = [...(last.blocks || [])];
+          const tail = blocks[blocks.length - 1];
+          if (tail && tail.type === 'thinking' && !tail.endedAt) {
+            blocks[blocks.length - 1] = { ...tail, text: tail.text + ev.delta };
+          } else {
+            blocks.push({ id: uid('th'), type: 'thinking', text: ev.delta, startedAt: now });
+          }
+          list[list.length - 1] = {
+            ...last,
+            thinking: (last.thinking || '') + ev.delta,
+            blocks,
+          };
+        }
+        return { messagesBySession: { ...prev.messagesBySession, [sid]: list } };
+      });
+      return;
+    }
+
+    if (ev.type === 'text_delta') {
+      const now = Date.now();
+      set((prev) => {
+        const list = [...(prev.messagesBySession[sid] || [])];
+        let last = list[list.length - 1];
+        if (!last || last.role !== 'assistant') {
+          last = {
+            id: uid('a'),
+            role: 'assistant',
+            text: ev.delta,
+            tools: [],
+            blocks: [{ id: uid('tx'), type: 'text', text: ev.delta }],
+            createdAt: now,
+            streaming: true,
+          };
+          list.push(last);
+        } else {
+          const blocks = closeOpenThinkingBlocks([...(last.blocks || [])], now);
+          const tail = blocks[blocks.length - 1];
+          let nextFullText = last.text;
+          if (tail && tail.type === 'text') {
+            blocks[blocks.length - 1] = { ...tail, text: tail.text + ev.delta };
+            nextFullText = last.text + ev.delta;
+          } else {
+            blocks.push({ id: uid('tx'), type: 'text', text: ev.delta });
+            nextFullText = last.text ? `${last.text}\n\n${ev.delta}` : ev.delta;
+          }
+          list[list.length - 1] = {
+            ...last,
+            text: nextFullText,
+            blocks,
+          };
+        }
         return { messagesBySession: { ...prev.messagesBySession, [sid]: list } };
       });
       return;
     }
 
     if (ev.type === 'tool_use') {
+      const now = Date.now();
       set((prev) => {
         const list = [...(prev.messagesBySession[sid] || [])];
         let last = list[list.length - 1];
         if (!last || last.role !== 'assistant') {
-          last = { id: uid('a'), role: 'assistant', text: '', tools: [], createdAt: Date.now(), streaming: true };
+          last = {
+            id: uid('a'),
+            role: 'assistant',
+            text: '',
+            tools: [ev.tool],
+            blocks: [{ id: `tb-${ev.tool.id}`, type: 'tool', tool: ev.tool }],
+            createdAt: now,
+            streaming: true,
+          };
           list.push(last);
         } else {
-          last = { ...last, tools: [...(last.tools || [])] };
-          list[list.length - 1] = last;
+          const blocks = closeOpenThinkingBlocks([...(last.blocks || [])], now);
+          blocks.push({ id: `tb-${ev.tool.id}`, type: 'tool', tool: ev.tool });
+          list[list.length - 1] = {
+            ...last,
+            tools: [...(last.tools || []), ev.tool],
+            blocks,
+          };
         }
-        last.tools!.push(ev.tool);
         return { messagesBySession: { ...prev.messagesBySession, [sid]: list } };
       });
       return;
     }
 
     if (ev.type === 'tool_result') {
+      const now = Date.now();
       set((prev) => {
         const list = [...(prev.messagesBySession[sid] || [])];
         const last = list[list.length - 1];
-        if (!last || last.role !== 'assistant' || !last.tools) return prev;
-        const tools = last.tools.map((t) =>
+        if (!last || last.role !== 'assistant') return prev;
+        const nextStatus: 'done' | 'error' = ev.isError ? 'error' : 'done';
+        const tools = (last.tools || []).map((t) =>
           t.id === ev.toolId || (!ev.toolId && t.status === 'running')
-            ? { ...t, outputPreview: ev.output, status: ev.isError ? ('error' as const) : ('done' as const) }
+            ? { ...t, outputPreview: ev.output, status: nextStatus, endedAt: now }
             : t
         );
-        list[list.length - 1] = { ...last, tools };
+        const blocks = (last.blocks || []).map((b) =>
+          b.type === 'tool' && (b.tool.id === ev.toolId || (!ev.toolId && b.tool.status === 'running'))
+            ? { ...b, tool: { ...b.tool, outputPreview: ev.output, status: nextStatus, endedAt: now } }
+            : b
+        );
+        list[list.length - 1] = { ...last, tools, blocks };
         return { messagesBySession: { ...prev.messagesBySession, [sid]: list } };
       });
       return;
     }
 
     if (ev.type === 'done') {
+      const now = Date.now();
       const queued = get().queuedPromptsBySession[sid] || [];
       const nextQueuedItem = queued[0];
       const remainingQueue = queued.slice(1);
@@ -362,17 +633,31 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
             ? {
                 ...m,
                 streaming: false,
-                tools: m.tools?.map((t) => (t.status === 'running' ? { ...t, status: 'done' as const } : t)),
+                focus: undefined,
+                endedAt: now,
+                tools: m.tools?.map((t) =>
+                  t.status === 'running' ? { ...t, status: 'done' as const, endedAt: now } : t
+                ),
+                blocks: m.blocks
+                  ? closeOpenThinkingBlocks(m.blocks, now).map((b) =>
+                      b.type === 'tool' && b.tool.status === 'running'
+                        ? { ...b, tool: { ...b.tool, status: 'done' as const, endedAt: now } }
+                        : b
+                    )
+                  : m.blocks,
               }
             : m
         );
         const nextAuth = { ...prev.authPrompts };
         delete nextAuth[sid];
+        const nextPerms = { ...prev.permissionPrompts };
+        delete nextPerms[sid];
         return {
           messagesBySession: { ...prev.messagesBySession, [sid]: list },
           runningSessions: { ...prev.runningSessions, [sid]: false },
           queuedPromptsBySession: { ...prev.queuedPromptsBySession, [sid]: remainingQueue },
           authPrompts: nextAuth,
+          permissionPrompts: nextPerms,
           errorsBySession: ev.error ? { ...prev.errorsBySession, [sid]: ev.error } : prev.errorsBySession,
         };
       });
@@ -395,12 +680,14 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       const runningSessions = { ...prev.runningSessions };
       const queuedPromptsBySession = { ...prev.queuedPromptsBySession };
       const authPrompts = { ...prev.authPrompts };
+      const permissionPrompts = { ...prev.permissionPrompts };
       const errorsBySession = { ...prev.errorsBySession };
       delete messagesBySession[tabSessionId];
       delete metricsBySession[tabSessionId];
       delete runningSessions[tabSessionId];
       delete queuedPromptsBySession[tabSessionId];
       delete authPrompts[tabSessionId];
+      delete permissionPrompts[tabSessionId];
       delete errorsBySession[tabSessionId];
       return {
         messagesBySession,
@@ -408,6 +695,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
         runningSessions,
         queuedPromptsBySession,
         authPrompts,
+        permissionPrompts,
         errorsBySession,
       };
     });

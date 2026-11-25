@@ -4,7 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import type {
   AccountQuotaSnapshot,
+  ChatBlock,
   ChatMessage,
+  ChatStepItem,
   SessionMetrics,
   SessionSummary,
   ToolCallItem,
@@ -132,11 +134,39 @@ function loadTimings(conversationId: string): Record<string, number> {
 function summarizeArgs(args?: Record<string, unknown>): string {
   if (!args || typeof args !== 'object') return '';
   const cand =
-    args.Path ?? args.path ?? args.CommandLine ?? args.command ?? args.query ?? args.url ?? '';
+    args.toolSummary ??
+    args.Path ??
+    args.path ??
+    args.CommandLine ??
+    args.command ??
+    args.query ??
+    args.url ??
+    '';
   const s = String(cand).replace(/\s+/g, ' ').trim();
   if (!s) return '';
   if (s.includes('/') && !s.includes(' ')) return path.basename(s);
-  return s.length > 44 ? s.slice(0, 44) + '…' : s;
+  return s.length > 56 ? s.slice(0, 56) + '…' : s;
+}
+
+function parseStepsFromArgs(args?: Record<string, unknown>): ChatStepItem[] | null {
+  if (!args || !Array.isArray(args.steps)) return null;
+  const out: ChatStepItem[] = [];
+  for (const item of args.steps) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    const title = typeof rec.title === 'string' ? rec.title.trim() : '';
+    const statusRaw = typeof rec.status === 'string' ? rec.status : 'pending';
+    if (!title) continue;
+    const status: ChatStepItem['status'] =
+      statusRaw === 'in_progress' ||
+      statusRaw === 'done' ||
+      statusRaw === 'skipped' ||
+      statusRaw === 'failed'
+        ? statusRaw
+        : 'pending';
+    out.push({ title, status });
+  }
+  return out.length > 0 ? out : null;
 }
 
 export function analyzeSingleSession(
@@ -380,27 +410,78 @@ export function loadTranscriptMessages(conversationId: string): ChatMessage[] {
         createdAt: Number.isNaN(ts) ? Date.now() : ts,
       });
     } else if (s.type === 'PLANNER_RESPONSE') {
-      const tools: ToolCallItem[] = (s.tool_calls || []).map((tc, j) => ({
-        id: tc.id || `tc-${s.step_index ?? i}-${j}`,
-        name: tc.name || 'tool',
-        argsSummary: summarizeArgs(tc.args),
-        status: 'done',
-      }));
+      const stepBlocks: ChatBlock[] = [];
+      const thinkingText = (s.thinking || '').trim();
+      const stepTs = Number.isNaN(ts) ? Date.now() : ts;
+
+      if (thinkingText) {
+        stepBlocks.push({
+          id: `th-${s.step_index ?? i}`,
+          type: 'thinking',
+          text: thinkingText,
+          startedAt: stepTs,
+          endedAt: stepTs,
+        });
+      }
+
+      const tools: ToolCallItem[] = [];
+      let latestSteps: ChatStepItem[] | null = null;
+      for (let j = 0; j < (s.tool_calls || []).length; j++) {
+        const tc = s.tool_calls![j];
+        const name = tc.name || 'tool';
+        if (name === 'update_focus') continue;
+        if (name === 'update_steps') {
+          const parsed = parseStepsFromArgs(tc.args);
+          if (parsed) latestSteps = parsed;
+          continue;
+        }
+        const toolItem: ToolCallItem = {
+          id: tc.id || `tc-${s.step_index ?? i}-${j}`,
+          name,
+          title: typeof tc.args?.toolSummary === 'string' ? tc.args.toolSummary : undefined,
+          argsSummary: summarizeArgs(tc.args),
+          status: 'done',
+        };
+        tools.push(toolItem);
+        stepBlocks.push({ id: `tb-${toolItem.id}`, type: 'tool', tool: toolItem });
+      }
+
+      if (latestSteps) {
+        stepBlocks.push({
+          id: `st-${s.step_index ?? i}`,
+          type: 'steps',
+          items: latestSteps,
+        });
+      }
+
       const text = (s.content || '').trim();
-      if (!text && tools.length === 0) continue;
+      if (text) {
+        stepBlocks.push({
+          id: `tx-${s.step_index ?? i}`,
+          type: 'text',
+          text,
+        });
+      }
+
+      if (stepBlocks.length === 0) continue;
 
       const prev = messages[messages.length - 1];
       if (prev && prev.role === 'assistant') {
         if (tools.length > 0) prev.tools = [...(prev.tools || []), ...tools];
         if (text) prev.text = prev.text ? `${prev.text}\n\n${text}` : text;
+        if (thinkingText) prev.thinking = prev.thinking ? `${prev.thinking}\n\n${thinkingText}` : thinkingText;
+        prev.blocks = [...(prev.blocks || []), ...stepBlocks];
+        prev.endedAt = stepTs;
       } else {
         messages.push({
           id: `a-${s.step_index ?? i}`,
           role: 'assistant',
           text,
-          thinking: s.thinking || undefined,
+          thinking: thinkingText || undefined,
           tools: tools.length > 0 ? tools : undefined,
-          createdAt: Number.isNaN(ts) ? Date.now() : ts,
+          blocks: stepBlocks,
+          createdAt: stepTs,
+          endedAt: stepTs,
         });
       }
     }

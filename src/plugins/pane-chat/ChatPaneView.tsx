@@ -20,6 +20,7 @@ import {
   RefreshCw,
   Rows2,
   Shield,
+  ShieldAlert,
   Sparkles,
   Square,
   Terminal,
@@ -37,10 +38,11 @@ import {
   type DeskClientContext,
   type PaneComponentProps,
 } from '../../kernel/client';
-import type { ChatMessage, ChatMode, SessionMetrics, ToolCallItem } from '../../shared/types';
-import { fmtAgo, fmtKo } from '../../utils/formatKo';
+import type { ChatMessage, ChatMode, SessionMetrics } from '../../shared/types';
+import { fmtKo } from '../../utils/formatKo';
 import { AGY_RPC, type AgyLoadedSession } from '../agent-agy/types';
-import { useChatSessionStore, type ChatTabState } from './chatStore';
+import { AssistantTurnView, QueuedUserBubble, UserMessageBubble } from './AssistantTurnView';
+import { useChatSessionStore, type ChatTabState, type QueuedPromptItem } from './chatStore';
 import type { PaneChatConfig } from './manifest';
 import {
   BUILTIN_SLASH_COMMANDS,
@@ -48,10 +50,9 @@ import {
   groupModelsIntoFamilies,
   type SlashCommandItem,
 } from './modelCatalog';
-import { renderSanitizedMarkdown } from './sanitizeMarkdown';
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
-const EMPTY_QUEUE: Array<{ prompt: string; images?: string[] }> = [];
+const EMPTY_QUEUE: QueuedPromptItem[] = [];
 
 const EFFORT_LABELS: Record<string, string> = {
   low: '낮음',
@@ -69,55 +70,15 @@ const MODE_OPTIONS: Array<{ value: ChatMode; label: string; desc: string }> = [
   { value: 'strict', label: '엄격', desc: '샌드박스 제한 실행' },
 ];
 
-const ToolGroupDisclosure: React.FC<{ tools: ToolCallItem[]; defaultOpen?: boolean }> = ({
-  tools,
-  defaultOpen = false,
-}) => {
-  const [open, setOpen] = useState(defaultOpen);
-  useEffect(() => {
-    setOpen(defaultOpen);
-  }, [defaultOpen]);
-  const running = tools.some((t) => t.status === 'running');
-  return (
-    <div className="mb-1.5">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1 text-[12.5px] cursor-pointer transition-opacity hover:opacity-100 opacity-75"
-        style={{ color: 'var(--muted)' }}
-      >
-        <span>{running ? `도구 실행 중 (${tools.length}개)` : `도구 ${tools.length}회 실행`}</span>
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-      </button>
-      {open && (
-        <div className="mt-1.5 pl-3 border-l space-y-1.5 text-[12px]" style={{ borderColor: 'var(--border)' }}>
-          {tools.map((t) => (
-            <div key={t.id} className="space-y-1">
-              <div className="flex items-center gap-2 font-mono text-[11.5px]">
-                <span className="font-semibold" style={{ color: 'var(--fg-soft)' }}>
-                  {t.name}
-                </span>
-                {t.argsSummary && (
-                  <span className="truncate" style={{ color: 'var(--muted)' }}>
-                    {t.argsSummary}
-                  </span>
-                )}
-              </div>
-              {t.outputPreview && (
-                <pre
-                  className="p-2 rounded-lg text-[11px] font-mono overflow-x-auto max-h-28 whitespace-pre-wrap"
-                  style={{ background: 'var(--sidebar)', color: 'var(--muted)' }}
-                >
-                  {t.outputPreview}
-                </pre>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
+function translatePermissionOption(opt: { optionId: string; name: string; kind?: string }): string {
+  const k = (opt.kind || opt.optionId || '').toLowerCase();
+  if (k.includes('allow_always') || opt.name.toLowerCase().includes('always')) return '이 세션에서 항상 허용';
+  if (k.includes('allow_once') || k === 'allow' || opt.name.toLowerCase() === 'allow') return '허용';
+  if (k.includes('reject') || k.includes('deny') || opt.name.toLowerCase().includes('deny') || opt.name.toLowerCase().includes('reject')) {
+    return '거부';
+  }
+  return opt.name;
+}
 
 export interface ChatPaneViewProps extends PaneComponentProps<ChatTabState> {
   ctx: DeskClientContext<PaneChatConfig>;
@@ -134,14 +95,18 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const metrics = useChatSessionStore((s) => s.metricsBySession[sessionId]);
   const isRunning = useChatSessionStore((s) => Boolean(s.runningSessions[sessionId]));
   const authPrompt = useChatSessionStore((s) => s.authPrompts[sessionId]);
+  const permissionPrompt = useChatSessionStore((s) => s.permissionPrompts[sessionId]);
   const errorText = useChatSessionStore((s) => s.errorsBySession[sessionId]);
   const adapterAvailable = useChatSessionStore((s) => s.adapterAvailable);
   const availableModels = useChatSessionStore((s) => s.availableModels);
+  const availableCommands = useChatSessionStore((s) => s.availableCommands);
   const refreshModels = useChatSessionStore((s) => s.refreshModels);
   const sendPrompt = useChatSessionStore((s) => s.sendPrompt);
+  const removeQueuedPrompt = useChatSessionStore((s) => s.removeQueuedPrompt);
   const clearQueuedPrompts = useChatSessionStore((s) => s.clearQueuedPrompts);
   const cancelTurn = useChatSessionStore((s) => s.cancelTurn);
   const submitAuthCode = useChatSessionStore((s) => s.submitAuthCode);
+  const respondPermission = useChatSessionStore((s) => s.respondPermission);
   const hydrateSession = useChatSessionStore((s) => s.hydrateSession);
   const setSessionMetrics = useChatSessionStore((s) => s.setSessionMetrics);
 
@@ -169,6 +134,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const isComposingRef = useRef(false);
+  const postSubmitGuardUntilRef = useRef(0);
 
   // Consume one-shot initialPrompt (e.g. from X-Ray "Ask Agent") so it does not repeat on reload
   useEffect(() => {
@@ -200,10 +167,19 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
     };
   }, [ctx.bus, groupId, tab.id, updateState]);
 
+  const lastMessage = messages[messages.length - 1];
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, messages[messages.length - 1]?.text]);
+  }, [
+    messages.length,
+    queuedPrompts.length,
+    lastMessage?.text,
+    lastMessage?.thinking,
+    lastMessage?.blocks?.length,
+    lastMessage?.focus,
+    permissionPrompt?.requestId,
+  ]);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -277,6 +253,21 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const allSlashItems = useMemo<SlashCommandItem[]>(() => {
     const items: SlashCommandItem[] = [...BUILTIN_SLASH_COMMANDS];
     const seen = new Set(items.map((i) => i.command.toLowerCase()));
+    const builtinSet = new Set(BUILTIN_SLASH_COMMANDS.map((i) => i.command.toLowerCase()));
+
+    // Merge live official commands/skills announced by `agy acp`
+    for (const acpCmd of availableCommands) {
+      const cmd = acpCmd.name.startsWith('/') ? acpCmd.name : `/${acpCmd.name}`;
+      const key = cmd.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({
+        command: cmd,
+        description: acpCmd.description || 'agy 명령어 · 스킬',
+        category: builtinSet.has(key) ? '내장 명령' : '스킬',
+      });
+    }
+
     if (Array.isArray(runtimeAssets)) {
       for (const asset of runtimeAssets) {
         if (asset.kind !== 'skill' || !asset.enabled) continue;
@@ -291,7 +282,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
       }
     }
     return items;
-  }, [runtimeAssets]);
+  }, [availableCommands, runtimeAssets]);
 
   const slashMatch = useMemo(() => {
     if (slashDismissed) return null;
@@ -425,9 +416,14 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    const text = input.trim();
+    const raw = textareaRef.current?.value ?? input;
+    const text = raw.trim();
     if (!text) return;
+    postSubmitGuardUntilRef.current = Date.now() + 50;
     setInput('');
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+    }
     const imgs = [...attachedImages];
     setAttachedImages([]);
     await sendPrompt(groupId, tab.id, state, text, imgs);
@@ -451,15 +447,6 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
       .filter((p): p is string => Boolean(p));
     if (paths.length > 0) setAttachedImages((prev) => [...prev, ...paths]);
   };
-
-  const renderedMessages = useMemo(
-    () =>
-      messages.map((m) => ({
-        ...m,
-        html: m.role === 'assistant' ? renderSanitizedMarkdown(m.text) : '',
-      })),
-    [messages]
-  );
 
   const colMaxWidthClass =
     cfg.chatWidth === 'wide' ? 'max-w-none' : cfg.chatWidth === 'medium' ? 'max-w-[900px]' : 'max-w-[740px]';
@@ -625,84 +612,37 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
             </div>
           )}
 
-          {renderedMessages.length === 0 ? (
+          {messages.length === 0 ? (
             <div className="pt-20 pb-8 flex flex-col items-center text-center gap-2">
               <div className="text-[20px] font-semibold tracking-tight" style={{ color: 'var(--fg)' }}>
                 무엇을 작업할까요?
               </div>
               <div className="text-[13px] max-w-md leading-relaxed" style={{ color: 'var(--muted)' }}>
-                각 채팅은 독립된 <code>agy</code> 세션으로 돌아갑니다. 상단 분할 버튼으로 플러그인 스튜디오·웹뷰·터미널을 옆에 자유롭게 띄워둘 수 있습니다.
+                각 채팅은 공식 <code>agy acp</code> 상주 세션으로 연결됩니다. 상단 분할 버튼으로 플러그인 스튜디오·웹뷰·터미널을 옆에 자유롭게 띄워둘 수 있습니다.
               </div>
             </div>
           ) : (
-            renderedMessages.map((m) =>
-              m.role === 'user' ? (
-                <div key={m.id} className="flex justify-end">
-                  <div
-                    className="max-w-[78%] rounded-[20px] px-4 py-2.5 leading-relaxed whitespace-pre-wrap break-words"
-                    style={{
-                      fontSize: 'var(--chat-font-size, 14px)',
-                      background: 'var(--surface)',
-                      color: 'var(--fg)',
-                      boxShadow: 'var(--shadow-sm)',
-                    }}
-                  >
-                    {m.images && m.images.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mb-1.5">
-                        {m.images.map((img) => (
-                          <span
-                            key={img}
-                            className="text-[11px] font-mono px-2 py-0.5 rounded-md"
-                            style={{ background: 'var(--card)', color: 'var(--muted)' }}
-                          >
-                            {img.split('/').pop()}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    {m.text}
-                  </div>
-                </div>
-              ) : !m.streaming && !m.text && !m.thinking && (!m.tools || m.tools.length === 0) ? null : (
-                <div key={m.id} className="space-y-1.5">
-                  {m.thinking && cfg.transcriptView !== 'normal' && (
-                    <details
-                      open={cfg.transcriptView === 'detailed'}
-                      className="text-[12.5px] mb-1"
-                      style={{ color: 'var(--muted)' }}
-                    >
-                      <summary className="cursor-pointer select-none opacity-75 hover:opacity-100">
-                        생각 과정
-                      </summary>
-                      <div
-                        className="mt-1.5 pl-3 border-l whitespace-pre-wrap text-[12.5px] leading-relaxed"
-                        style={{ borderColor: 'var(--border)' }}
-                      >
-                        {m.thinking}
-                      </div>
-                    </details>
-                  )}
-
-                  {m.tools && m.tools.length > 0 && (
-                    <ToolGroupDisclosure tools={m.tools} defaultOpen={cfg.transcriptView === 'detailed'} />
-                  )}
-
-                  {m.text ? (
-                    <div className="md-prose break-words" dangerouslySetInnerHTML={{ __html: m.html }} />
-                  ) : m.streaming ? (
-                    <div className="text-[13px] animate-pulse" style={{ color: 'var(--muted)' }}>
-                      응답 작성 중…
-                    </div>
-                  ) : null}
-
-                  {!m.streaming && m.createdAt > 0 && (
-                    <div className="pt-1 text-[11px]" style={{ color: 'var(--muted)' }}>
-                      {fmtAgo(m.createdAt)}
-                    </div>
-                  )}
-                </div>
-              )
-            )
+            <>
+              {messages.map((m) =>
+                m.role === 'user' ? (
+                  <UserMessageBubble key={m.id} message={m} />
+                ) : (
+                  <AssistantTurnView
+                    key={m.id}
+                    message={m}
+                    transcriptView={cfg.transcriptView || 'normal'}
+                  />
+                )
+              )}
+              {queuedPrompts.map((q) => (
+                <QueuedUserBubble
+                  key={q.id}
+                  prompt={q.prompt}
+                  images={q.images}
+                  onCancel={() => removeQueuedPrompt(sessionId, q.id)}
+                />
+              ))}
+            </>
           )}
 
           {errorText && (
@@ -723,13 +663,13 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
       {/* 하단 플로팅 영역: 배너 + 동적 위젯 슬롯(chat:above-composer) + 컴포저 + 동적 풋터 슬롯 */}
       <div className="shrink-0 w-full">
         <div className={`${colMaxWidthClass} mx-auto w-full px-5 pb-4 pt-1 space-y-2.5`}>
-          {queuedPrompts.length > 0 && (
+          {queuedPrompts.length > 1 && (
             <div
-              className="rounded-xl border px-3.5 py-2 flex items-center justify-between gap-2 text-xs"
+              className="rounded-xl border px-3.5 py-1.5 flex items-center justify-between gap-2 text-xs"
               style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
             >
-              <span className="truncate" style={{ color: 'var(--fg-soft)' }}>
-                대기열 {queuedPrompts.length}건: <strong className="font-medium">{queuedPrompts[0].prompt}</strong>
+              <span className="truncate" style={{ color: 'var(--muted)' }}>
+                대기 중인 메시지 <strong style={{ color: 'var(--fg-soft)' }}>{queuedPrompts.length}건</strong> · 현재 응답 완료 후 순서대로 전송됩니다
               </span>
               <button
                 type="button"
@@ -737,7 +677,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                 className="text-[11px] px-2 py-0.5 rounded hover:bg-[var(--card)] cursor-pointer shrink-0"
                 style={{ color: 'var(--muted)' }}
               >
-                비우기
+                모두 취소
               </button>
             </div>
           )}
@@ -773,6 +713,90 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   type="button"
                   onClick={() => setPendingSwitch(null)}
                   className="px-2 py-1 rounded-lg text-[11px] cursor-pointer hover:bg-[var(--surface)]"
+                  style={{ color: 'var(--muted)' }}
+                >
+                  취소
+                </button>
+              </div>
+            </div>
+          )}
+
+          {permissionPrompt && (
+            <div
+              className="rounded-2xl border px-4 py-3 text-xs space-y-2.5"
+              style={{
+                background: 'var(--card)',
+                borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)',
+                boxShadow: 'var(--shadow-sm)',
+              }}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2 min-w-0">
+                  <ShieldAlert size={15} className="shrink-0 mt-0.5" style={{ color: 'var(--warn)' }} />
+                  <div className="min-w-0">
+                    <div className="font-semibold flex items-center gap-1.5 flex-wrap">
+                      <span>도구 실행 승인 요청</span>
+                      <span
+                        className="font-mono text-[10.5px] px-1.5 py-0.5 rounded-md font-normal"
+                        style={{ background: 'var(--surface)', color: 'var(--muted)' }}
+                      >
+                        {permissionPrompt.toolName}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11.5px] break-all" style={{ color: 'var(--fg-soft)' }}>
+                      {permissionPrompt.argsSummary || permissionPrompt.title}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {permissionPrompt.rawInput && (
+                <details className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                  <summary className="cursor-pointer select-none hover:opacity-100 opacity-80">
+                    실행 파라미터 상세 보기
+                  </summary>
+                  <pre
+                    className="mt-1.5 p-2 rounded-xl border font-mono text-[11px] overflow-x-auto max-h-36 whitespace-pre-wrap break-words"
+                    style={{ background: 'var(--sidebar)', borderColor: 'var(--border)' }}
+                  >
+                    {permissionPrompt.rawInput}
+                  </pre>
+                </details>
+              )}
+
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                {permissionPrompt.options.map((opt, idx) => {
+                  const isReject =
+                    (opt.kind || opt.optionId).toLowerCase().includes('reject') ||
+                    (opt.kind || opt.optionId).toLowerCase().includes('deny');
+                  const isPrimary = idx === 0 && !isReject;
+                  return (
+                    <button
+                      key={opt.optionId}
+                      type="button"
+                      onClick={() =>
+                        void respondPermission(sessionId, permissionPrompt.requestId, opt.optionId)
+                      }
+                      className="px-3 py-1.5 rounded-lg text-[11.5px] font-medium cursor-pointer transition-opacity hover:opacity-90"
+                      style={
+                        isPrimary
+                          ? { background: 'var(--accent)', color: '#fff' }
+                          : isReject
+                            ? {
+                                background: 'color-mix(in srgb, var(--danger) 12%, var(--surface))',
+                                color: 'var(--danger)',
+                              }
+                            : { background: 'var(--surface)', color: 'var(--fg-soft)' }
+                      }
+                    >
+                      {translatePermissionOption(opt)}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => void respondPermission(sessionId, permissionPrompt.requestId, null)}
+                  className="px-2.5 py-1.5 rounded-lg text-[11.5px] cursor-pointer hover:bg-[var(--surface)]"
                   style={{ color: 'var(--muted)' }}
                 >
                   취소
@@ -955,10 +979,30 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               ref={textareaRef}
               rows={1}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onCompositionStart={() => {
+                isComposingRef.current = true;
+              }}
+              onCompositionEnd={(e) => {
+                isComposingRef.current = false;
+                if (Date.now() < postSubmitGuardUntilRef.current) {
+                  setInput('');
+                  if (textareaRef.current) textareaRef.current.value = '';
+                  return;
+                }
+                setInput(e.currentTarget.value);
+              }}
+              onChange={(e) => {
+                if (Date.now() < postSubmitGuardUntilRef.current) {
+                  setInput('');
+                  if (textareaRef.current) textareaRef.current.value = '';
+                  return;
+                }
+                setInput(e.target.value);
+              }}
               onPaste={handlePaste}
               onKeyDown={(e) => {
-                if (slashMenuOpen && !e.nativeEvent.isComposing) {
+                const composing = e.nativeEvent.isComposing || e.keyCode === 229 || isComposingRef.current;
+                if (slashMenuOpen && !composing) {
                   const visibleCount = Math.min(filteredSlashItems.length, 12);
                   if (e.key === 'ArrowDown') {
                     e.preventDefault();
@@ -984,7 +1028,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     }
                   }
                 }
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                if (e.key === 'Enter' && !composing) {
                   const wantCmd = cfg.sendKey === 'cmd-enter';
                   if ((wantCmd && (e.metaKey || e.ctrlKey)) || (!wantCmd && !e.shiftKey)) {
                     e.preventDefault();
@@ -1383,7 +1427,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   )}
                 </div>
 
-                {isRunning ? (
+                {isRunning && (
                   <button
                     type="button"
                     onClick={() => void cancelTurn(sessionId)}
@@ -1393,13 +1437,14 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   >
                     <Square size={12} fill="currentColor" />
                   </button>
-                ) : (
+                )}
+                {(!isRunning || input.trim().length > 0) && (
                   <button
                     type="submit"
                     disabled={!input.trim() || !adapterAvailable}
                     className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer transition-opacity disabled:opacity-35 hover:opacity-90"
                     style={{ background: 'var(--accent)', color: '#fff' }}
-                    title="전송 (Enter)"
+                    title={isRunning ? '대기열에 추가 (Enter)' : '전송 (Enter)'}
                   >
                     <ArrowRight size={16} strokeWidth={2.2} />
                   </button>

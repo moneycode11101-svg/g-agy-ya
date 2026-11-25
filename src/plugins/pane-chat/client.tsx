@@ -103,6 +103,20 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
           useLayoutStore.getState().updateTabMeta(groupId, tabId, { title: shortTitle });
         }
       },
+      updateTabTitleBySession: (tabSessionId, title) => {
+        const s = useLayoutStore.getState();
+        for (const grp of Object.values(s.groups)) {
+          const t = grp.tabs.find((x) => x.paneType === 'chat' && (x.state as ChatTabState)?.sessionId === tabSessionId);
+          if (t) {
+            const clean = title.trim();
+            if (clean) {
+              const shortTitle = clean.length > 32 ? clean.slice(0, 32) + '…' : clean;
+              s.updateTabMeta(grp.id, t.id, { title: shortTitle });
+            }
+            break;
+          }
+        }
+      },
       findTabBySessionId: (tabSessionId) => {
         const s = useLayoutStore.getState();
         for (const grp of Object.values(s.groups)) {

@@ -49,9 +49,10 @@ export interface AgyLoadedSession {
 export interface AgyAgentAdapterHostService {
   readonly id: string;
   readonly displayName: string;
-  sendPrompt(req: AgySendPromptRequest): { ok: boolean; error?: string };
+  sendPrompt(req: AgySendPromptRequest): Promise<{ ok: boolean; error?: string }> | { ok: boolean; error?: string };
   cancelTurn(tabSessionId: string): void;
   submitAuthCode(tabSessionId: string, code: string): boolean;
+  respondPermission(tabSessionId: string, requestId: string, optionId: string | null): boolean;
   watchSession(tabSessionId: string, conversationId: string): SessionMetrics | null;
   unwatchSession(tabSessionId: string): void;
   listSessions(limit?: number): SessionSummary[];
@@ -100,6 +101,7 @@ export const AGY_RPC = {
   PROMPT_SEND: 'agent-agy:prompt.send',
   PROMPT_CANCEL: 'agent-agy:prompt.cancel',
   AUTH_SUBMIT: 'agent-agy:auth.submitCode',
+  PERMISSION_RESPOND: 'agent-agy:permission.respond',
   QUOTA_GET: 'agent-agy:quota.get',
   MODELS_LIST: 'agent-agy:models.list',
   RUNTIME_INFO: 'agent-agy:runtime.info',

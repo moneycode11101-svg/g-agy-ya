@@ -62,6 +62,8 @@ export const agentAgyHostPlugin: HostPluginModule<AgyPluginConfig> = {
       sendPrompt: (req) => bridge.sendPrompt(req),
       cancelTurn: (tabSessionId) => bridge.cancelTurn(tabSessionId),
       submitAuthCode: (tabSessionId, code) => bridge.submitAuthCode(tabSessionId, code),
+      respondPermission: (tabSessionId, requestId, optionId) =>
+        bridge.respondPermission(tabSessionId, requestId, optionId),
       watchSession: (tabSessionId, conversationId) => bridge.watchSession(tabSessionId, conversationId),
       unwatchSession: (tabSessionId) => bridge.unwatchSession(tabSessionId),
       listSessions: (limit = 40) => listRecentSessions(limit),
@@ -113,7 +115,7 @@ export const agentAgyHostPlugin: HostPluginModule<AgyPluginConfig> = {
     });
     ctx.rpc.handle<AgySendPromptRequest, { ok: boolean; error?: string }>(
       AGY_RPC.PROMPT_SEND,
-      (payload) => adapterService.sendPrompt(payload)
+      async (payload) => await adapterService.sendPrompt(payload)
     );
     ctx.rpc.handle<{ tabSessionId: string }, void>(AGY_RPC.PROMPT_CANCEL, (payload) => {
       adapterService.cancelTurn(payload.tabSessionId);
@@ -121,6 +123,10 @@ export const agentAgyHostPlugin: HostPluginModule<AgyPluginConfig> = {
     ctx.rpc.handle<{ tabSessionId: string; code: string }, boolean>(
       AGY_RPC.AUTH_SUBMIT,
       (payload) => adapterService.submitAuthCode(payload.tabSessionId, payload.code)
+    );
+    ctx.rpc.handle<{ tabSessionId: string; requestId: string; optionId: string | null }, boolean>(
+      AGY_RPC.PERMISSION_RESPOND,
+      (payload) => adapterService.respondPermission(payload.tabSessionId, payload.requestId, payload.optionId)
     );
     ctx.rpc.handle<{ force?: boolean } | undefined>(AGY_RPC.QUOTA_GET, (payload) =>
       adapterService.getQuota(Boolean(payload?.force))
@@ -144,7 +150,8 @@ export const agentAgyHostPlugin: HostPluginModule<AgyPluginConfig> = {
       }
     );
 
-    // Non-blocking initial quota refresh
+    // Non-blocking initial quota refresh + ACP daemon warmup
     void quota.fetchLiveQuota(false);
+    bridge.warmup();
   },
 };
