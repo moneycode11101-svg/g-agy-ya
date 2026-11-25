@@ -67,9 +67,16 @@ export function computePaceTickPct(
 }
 
 export function quotaBucketTitle(b: QuotaBucket): string {
-  const grp = b.group === 'gemini' || b.id.toLowerCase().includes('gemini') ? 'Gemini' : 'Claude·GPT';
-  if (b.window === '5h' || b.id.toLowerCase().includes('5h')) return `${grp} 5시간 한도`;
-  if (b.window === 'weekly' || b.id.toLowerCase().includes('week')) return `${grp} 주간 한도`;
+  const idLower = b.id.toLowerCase();
+  const grp =
+    b.group === 'codex' || idLower.includes('codex')
+      ? 'Codex'
+      : b.group === 'gemini' || idLower.includes('gemini')
+        ? 'Gemini'
+        : 'Claude·GPT';
+  if (b.window === '5h' || idLower.includes('5h')) return `${grp} 5시간 한도`;
+  if (b.window === 'weekly' || idLower.includes('week')) return `${grp} 주간 한도`;
+  if (b.window === 'monthly' || idLower.includes('month')) return `${grp} 월간 한도`;
   return `${grp} (${b.id})`;
 }
 
@@ -79,6 +86,9 @@ export function shortModelLabel(model: string): string {
     .replace(/^gemini-4-/, 'Gemini 4 ')
     .replace(/^gemini-/, 'Gemini ')
     .replace(/^claude-/, 'Claude ')
+    .replace(/^gpt-/i, 'GPT-')
+    .replace(/^o(\d+)-/i, 'o$1 ')
     .replace(/-/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\bGpt\b/g, 'GPT');
 }

@@ -24,7 +24,12 @@ export const RUNTIME_CONTEXT_INSPECTOR_MANIFEST: PluginManifest = {
   entry: {
     client: 'builtin:runtime-context-inspector/client',
   },
-  optionalRequires: [BUILTIN_PLUGIN_IDS.AGENT_AGY, BUILTIN_PLUGIN_IDS.PANE_CHAT],
+  optionalRequires: [
+    BUILTIN_PLUGIN_IDS.AGENT_AGY,
+    BUILTIN_PLUGIN_IDS.AGENT_CLAUDE,
+    BUILTIN_PLUGIN_IDS.AGENT_CODEX,
+    BUILTIN_PLUGIN_IDS.PANE_CHAT,
+  ],
   capabilities: [],
   configSchema: [
     {

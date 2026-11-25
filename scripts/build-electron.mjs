@@ -12,7 +12,7 @@ const common = {
   platform: 'node',
   target: 'node22',
   format: 'cjs',
-  external: ['electron', 'esbuild'],
+  external: ['electron', 'esbuild', '@anthropic-ai/claude-agent-sdk'],
   sourcemap: true,
 };
 

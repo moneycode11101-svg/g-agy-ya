@@ -362,6 +362,26 @@ export const AssistantTurnView: React.FC<AssistantTurnViewProps> = ({
     if (block.type === 'steps') {
       return <StepsChecklistView key={block.id || idx} items={block.items} />;
     }
+    if (block.type === 'plan') {
+      return (
+        <div
+          key={block.id || idx}
+          className="rounded-xl border px-3.5 py-2.5 space-y-1.5"
+          style={{
+            background: 'color-mix(in srgb, var(--accent) 5%, var(--card))',
+            borderColor: 'color-mix(in srgb, var(--accent) 30%, var(--border))',
+          }}
+        >
+          <div className="text-[11px] font-semibold" style={{ color: 'var(--accent)' }}>
+            제안된 구현 계획
+          </div>
+          <div
+            className="md-prose text-[12.5px] leading-relaxed"
+            dangerouslySetInnerHTML={{ __html: renderSanitizedMarkdown(block.text) }}
+          />
+        </div>
+      );
+    }
     // Intermediate progress text between tool steps (styled quieter than final response, just like vanilla Antigravity)
     return (
       <div

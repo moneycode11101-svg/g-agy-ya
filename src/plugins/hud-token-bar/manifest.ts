@@ -24,7 +24,12 @@ export const HUD_TOKEN_BAR_MANIFEST: PluginManifest = {
   entry: {
     client: 'builtin:hud-token-bar/client',
   },
-  optionalRequires: [BUILTIN_PLUGIN_IDS.PANE_CHAT, BUILTIN_PLUGIN_IDS.AGENT_AGY],
+  optionalRequires: [
+    BUILTIN_PLUGIN_IDS.PANE_CHAT,
+    BUILTIN_PLUGIN_IDS.AGENT_AGY,
+    BUILTIN_PLUGIN_IDS.AGENT_CLAUDE,
+    BUILTIN_PLUGIN_IDS.AGENT_CODEX,
+  ],
   capabilities: [],
   configSchema: [
     {

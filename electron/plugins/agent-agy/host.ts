@@ -1,5 +1,6 @@
 import os from 'node:os';
 import type { DeskHostContext, HostPluginModule } from '../../../src/kernel/shared/types';
+import { AGENT_BUS } from '../../../src/shared/agentProtocol';
 import {
   AGY_BUS,
   AGY_RPC,
@@ -20,7 +21,9 @@ export const agentAgyHostPlugin: HostPluginModule<AgyPluginConfig> = {
       getConfig: () => ctx.config.get(),
       quota,
       emit: (ev) => {
-        ctx.bus.publish(AGY_BUS.EVENT, ev);
+        const tagged = { ...ev, adapterId: 'agent-agy' };
+        ctx.bus.publish(AGY_BUS.EVENT, tagged);
+        ctx.bus.publish(AGENT_BUS.EVENT, tagged);
         if (ev.type === 'done' && !ev.error) {
           void quota.fetchLiveQuota(true);
         }
@@ -45,7 +48,9 @@ export const agentAgyHostPlugin: HostPluginModule<AgyPluginConfig> = {
     ctx.scope.onDispose(quota.startWatcher(), 'agent-agy:quota-watcher');
     ctx.scope.onDispose(
       quota.onChange((snap) => {
-        ctx.bus.publish(AGY_BUS.QUOTA_UPDATED, snap);
+        const taggedSnap = { ...snap, adapterId: 'agent-agy' };
+        ctx.bus.publish(AGY_BUS.QUOTA_UPDATED, taggedSnap);
+        ctx.bus.publish(AGENT_BUS.QUOTA_UPDATED, { adapterId: 'agent-agy', snapshot: taggedSnap });
       }),
       'agent-agy:quota-sub'
     );

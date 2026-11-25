@@ -20,10 +20,14 @@ export const runtimeContextInspectorClientPlugin: ClientPluginModule<RuntimeCont
   activate(ctx: DeskClientContext<RuntimeContextInspectorConfig>) {
     const SettingsSectionView: React.FC = () => <RuntimeContextInspectorView ctx={ctx} />;
 
-    const PaneView: React.FC<PaneComponentProps<{ cwd?: string }>> = ({ tab }) => (
+    const PaneView: React.FC<PaneComponentProps<{ cwd?: string; adapterId?: string }>> = ({ tab }) => (
       <div className="flex-1 min-h-0 overflow-y-auto scroll-thin p-5" style={{ background: 'var(--bg)' }}>
         <div className="max-w-[760px] mx-auto">
-          <RuntimeContextInspectorView ctx={ctx} cwdOverride={tab.state?.cwd} />
+          <RuntimeContextInspectorView
+            ctx={ctx}
+            cwdOverride={tab.state?.cwd}
+            adapterIdOverride={tab.state?.adapterId}
+          />
         </div>
       </div>
     );
@@ -41,7 +45,13 @@ export const runtimeContextInspectorClientPlugin: ClientPluginModule<RuntimeCont
 
       if (cfg.showComposerBadge === false) return null;
 
-      const proj = snapshot?.runtimeAssetsByAdapter?.[BUILTIN_PLUGIN_IDS.AGENT_AGY];
+      const tabAdapterId =
+        typeof tab.state?.adapterId === 'string' && tab.state.adapterId
+          ? tab.state.adapterId
+          : BUILTIN_PLUGIN_IDS.AGENT_AGY;
+      const proj =
+        snapshot?.runtimeAssetsByAdapter?.[tabAdapterId] ??
+        snapshot?.runtimeAssetsByAdapter?.[BUILTIN_PLUGIN_IDS.AGENT_AGY];
       const totalTokens = proj ? proj.totals.ruleTokens + proj.totals.skillTokens + proj.totals.mcpTokens : 0;
       const skillCount = proj ? proj.assets.filter((a) => a.kind === 'skill' && a.enabled).length : 0;
       const tabCwd = typeof tab.state?.cwd === 'string' ? tab.state.cwd : undefined;
@@ -50,7 +60,11 @@ export const runtimeContextInspectorClientPlugin: ClientPluginModule<RuntimeCont
         <button
           type="button"
           onClick={() =>
-            ctx.workspace.openTab('runtime-assets', { cwd: tabCwd }, { groupId, split: 'h' })
+            ctx.workspace.openTab(
+              'runtime-assets',
+              { cwd: tabCwd, adapterId: tabAdapterId },
+              { groupId, split: 'h' }
+            )
           }
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] cursor-pointer transition-colors hover:bg-[var(--surface)]"
           style={{ color: 'var(--muted)' }}
@@ -91,7 +105,7 @@ export const runtimeContextInspectorClientPlugin: ClientPluginModule<RuntimeCont
     });
 
     // 2) Independent split pane (`runtime-assets`)
-    ctx.panes.registerType<{ cwd?: string }>({
+    ctx.panes.registerType<{ cwd?: string; adapterId?: string }>({
       type: 'runtime-assets',
       label: '런타임 자산 (스킬·MCP)',
       description: 'Layer 2 스킬·규칙·MCP 토큰 실측 및 제어',
@@ -103,7 +117,10 @@ export const runtimeContextInspectorClientPlugin: ClientPluginModule<RuntimeCont
       order: 50,
       createDefaultState: (init) => ({
         title: '런타임 자산',
-        state: { cwd: typeof init?.cwd === 'string' ? init.cwd : undefined },
+        state: {
+          cwd: typeof init?.cwd === 'string' ? init.cwd : undefined,
+          adapterId: typeof init?.adapterId === 'string' ? init.adapterId : undefined,
+        },
       }),
       matchOmnibox: (query) => {
         const q = query.trim().toLowerCase();

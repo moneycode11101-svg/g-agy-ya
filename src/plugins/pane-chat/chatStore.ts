@@ -1,19 +1,23 @@
 import { create } from 'zustand';
+import {
+  agentRpc,
+  type AgentModelOption,
+  type ClientAgentAdapterDescriptor,
+} from '../../shared/agentProtocol';
 import type {
   AccountQuotaSnapshot,
-  AgyEvent,
+  AgentEvent,
   AuthPrompt,
   ChatBlock,
   ChatMessage,
   ChatMode,
   PermissionPrompt,
+  QuestionPrompt,
   SessionMetrics,
 } from '../../shared/types';
-import {
-  AGY_RPC,
-  FALLBACK_AGY_MODELS,
-  type AgyModelOption,
-} from '../agent-agy/types';
+import { FALLBACK_AGY_MODELS } from '../agent-agy/types';
+import { FALLBACK_CLAUDE_MODELS } from '../agent-claude/types';
+import { FALLBACK_CODEX_MODELS } from '../agent-codex/types';
 
 function uid(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -29,6 +33,18 @@ function closeOpenThinkingBlocks(blocks: ChatBlock[], now: number): ChatBlock[] 
     return b;
   });
   return changed ? next : blocks;
+}
+
+const DEFAULT_FALLBACK_MODELS_BY_ADAPTER: Record<string, AgentModelOption[]> = {
+  'agent-agy': FALLBACK_AGY_MODELS,
+  'agent-claude': FALLBACK_CLAUDE_MODELS,
+  'agent-codex': FALLBACK_CODEX_MODELS,
+};
+
+export interface QueuedPromptItem {
+  id: string;
+  prompt: string;
+  images?: string[];
 }
 
 export interface ChatTabState extends Record<string, unknown> {
@@ -55,13 +71,6 @@ export interface ChatRuntimeBridgeCallbacks {
   findTabBySessionId: (tabSessionId: string) => { groupId: string; tabId: string; state: ChatTabState } | null;
 }
 
-export interface QueuedPromptItem {
-  id: string;
-  prompt: string;
-  images?: string[];
-  createdAt: number;
-}
-
 export interface ChatSessionStoreState {
   messagesBySession: Record<string, ChatMessage[]>;
   metricsBySession: Record<string, SessionMetrics>;
@@ -69,19 +78,27 @@ export interface ChatSessionStoreState {
   queuedPromptsBySession: Record<string, QueuedPromptItem[]>;
   authPrompts: Record<string, AuthPrompt>;
   permissionPrompts: Record<string, PermissionPrompt>;
+  questionPrompts: Record<string, QuestionPrompt>;
+  noticesBySession: Record<string, Array<{ id: string; level: 'info' | 'warn' | 'error'; text: string }>>;
   errorsBySession: Record<string, string>;
+  /** Legacy mirror of `accountQuotaByAdapter['agent-agy']` for backward compat */
   accountQuota: AccountQuotaSnapshot | null;
+  accountQuotaByAdapter: Record<string, AccountQuotaSnapshot>;
   loadingQuota: boolean;
   adapterAvailable: boolean;
-  availableModels: AgyModelOption[];
+  availableAdapters: ClientAgentAdapterDescriptor[];
+  /** Legacy mirror of `availableModelsByAdapter['agent-agy']` */
+  availableModels: AgentModelOption[];
+  availableModelsByAdapter: Record<string, AgentModelOption[]>;
   availableCommands: Array<{ name: string; description: string }>;
   callbacks: ChatRuntimeBridgeCallbacks | null;
 
   setCallbacks: (cbs: ChatRuntimeBridgeCallbacks | null) => void;
   setAdapterAvailable: (available: boolean) => void;
-  setAccountQuota: (snap: AccountQuotaSnapshot) => void;
-  refreshAccountQuota: (force?: boolean) => Promise<void>;
-  refreshModels: (force?: boolean) => Promise<void>;
+  setAvailableAdapters: (adapters: ClientAgentAdapterDescriptor[]) => void;
+  setAccountQuota: (snap: AccountQuotaSnapshot, adapterId?: string) => void;
+  refreshAccountQuota: (force?: boolean, adapterId?: string) => Promise<void>;
+  refreshModels: (force?: boolean, adapterId?: string) => Promise<void>;
 
   hydrateSession: (tabSessionId: string, messages: ChatMessage[], metrics?: SessionMetrics | null) => void;
   setSessionMetrics: (tabSessionId: string, metrics: SessionMetrics) => void;
@@ -97,17 +114,33 @@ export interface ChatSessionStoreState {
   updateQueuedPrompt: (tabSessionId: string, queueId: string, nextPrompt: string) => void;
   sendQueuedNow: (groupId: string, tabId: string, state: ChatTabState, queueId: string) => Promise<void>;
   clearQueuedPrompts: (tabSessionId: string) => void;
-  cancelTurn: (tabSessionId: string) => Promise<void>;
+  cancelTurn: (tabSessionId: string, adapterIdOverride?: string) => Promise<void>;
   submitAuthCode: (tabSessionId: string, code: string) => Promise<void>;
   respondPermission: (tabSessionId: string, requestId: string, optionId: string | null) => Promise<void>;
-  handleAgyEvent: (ev: AgyEvent) => void;
+  respondQuestion: (
+    tabSessionId: string,
+    requestId: string,
+    answers: Record<string, string | string[]> | null
+  ) => Promise<void>;
+  dismissNotice: (tabSessionId: string, noticeId: string) => void;
+  handleAgyEvent: (ev: AgentEvent) => void;
+  handleAgentEvent: (ev: AgentEvent) => void;
   cleanupSession: (tabSessionId: string) => void;
 }
 
+function resolveAdapterForSession(
+  cbs: ChatRuntimeBridgeCallbacks | null,
+  tabSessionId: string,
+  override?: string
+): string {
+  if (override) return override;
+  const tab = cbs?.findTabBySessionId(tabSessionId);
+  return tab?.state?.adapterId || 'agent-agy';
+}
+
 /**
- * Session & streaming store owned by `pane-chat`.
- * Maintains chronological `blocks` (thinking, tools, steps, text), interactive permission prompts,
- * live official commands, and `metricsBySession` synced directly from `agent-agy` ACP events.
+ * Multi-adapter session & streaming store owned by `pane-chat`.
+ * Dynamically routes RPCs to `agent-agy`, `agent-claude`, or `agent-codex` via `adapterId`.
  */
 export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => ({
   messagesBySession: {},
@@ -116,31 +149,59 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
   queuedPromptsBySession: {},
   authPrompts: {},
   permissionPrompts: {},
+  questionPrompts: {},
+  noticesBySession: {},
   errorsBySession: {},
   accountQuota: null,
+  accountQuotaByAdapter: {},
   loadingQuota: false,
   adapterAvailable: true,
+  availableAdapters: [],
   availableModels: FALLBACK_AGY_MODELS,
+  availableModelsByAdapter: { ...DEFAULT_FALLBACK_MODELS_BY_ADAPTER },
   availableCommands: [],
   callbacks: null,
 
   setCallbacks: (callbacks) => set({ callbacks }),
   setAdapterAvailable: (adapterAvailable) => set({ adapterAvailable }),
 
-  setAccountQuota: (snap) => {
-    if (snap && snap.buckets.length > 0) {
-      set({ accountQuota: snap });
-    }
+  setAvailableAdapters: (adapters) =>
+    set((prev) => {
+      const nextModels = { ...prev.availableModelsByAdapter };
+      for (const a of adapters) {
+        if (!nextModels[a.id] && a.fallbackModels?.length) {
+          nextModels[a.id] = [...a.fallbackModels];
+        }
+      }
+      return {
+        availableAdapters: adapters,
+        adapterAvailable: adapters.length > 0,
+        availableModelsByAdapter: nextModels,
+      };
+    }),
+
+  setAccountQuota: (snap, adapterId) => {
+    const id = adapterId || snap?.adapterId || 'agent-agy';
+    if (!snap) return;
+    set((prev) => {
+      const hasBuckets = snap.buckets.length > 0;
+      const existing = prev.accountQuotaByAdapter[id];
+      if (!hasBuckets && existing && existing.buckets.length > 0) return prev;
+      return {
+        accountQuotaByAdapter: { ...prev.accountQuotaByAdapter, [id]: { ...snap, adapterId: id } },
+        ...(id === 'agent-agy' && hasBuckets ? { accountQuota: snap } : {}),
+      };
+    });
   },
 
-  refreshAccountQuota: async (force = false) => {
+  refreshAccountQuota: async (force = false, adapterId = 'agent-agy') => {
     const cbs = get().callbacks;
     if (!cbs) return;
     set({ loadingQuota: true });
     try {
-      const snap = await cbs.invokeRpc<AccountQuotaSnapshot>(AGY_RPC.QUOTA_GET, { force });
-      if (snap && (snap.buckets.length > 0 || !get().accountQuota)) {
-        set({ accountQuota: snap });
+      const snap = await cbs.invokeRpc<AccountQuotaSnapshot>(agentRpc(adapterId, 'quota.get'), { force });
+      if (snap) {
+        get().setAccountQuota(snap, adapterId);
       }
     } catch {
       // adapter may be disabled
@@ -149,13 +210,16 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     }
   },
 
-  refreshModels: async (force = false) => {
+  refreshModels: async (force = false, adapterId = 'agent-agy') => {
     const cbs = get().callbacks;
     if (!cbs) return;
     try {
-      const models = await cbs.invokeRpc<AgyModelOption[]>(AGY_RPC.MODELS_LIST, { force });
+      const models = await cbs.invokeRpc<AgentModelOption[]>(agentRpc(adapterId, 'models.list'), { force });
       if (Array.isArray(models) && models.length > 0) {
-        set({ availableModels: models });
+        set((prev) => ({
+          availableModelsByAdapter: { ...prev.availableModelsByAdapter, [adapterId]: models },
+          ...(adapterId === 'agent-agy' ? { availableModels: models } : {}),
+        }));
       }
     } catch {
       // keep fallback models
@@ -186,21 +250,20 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     if (!cbs) return;
 
     const sid = state.sessionId;
+    const adapterId = state.adapterId || 'agent-agy';
+
     if (get().runningSessions[sid]) {
       const mode = delivery || cbs.getPendingMessageMode();
       if (mode === 'queue') {
         set((prev) => ({
           queuedPromptsBySession: {
             ...prev.queuedPromptsBySession,
-            [sid]: [
-              ...(prev.queuedPromptsBySession[sid] || []),
-              { id: uid('q'), prompt: trimmed, images, createdAt: Date.now() },
-            ],
+            [sid]: [...(prev.queuedPromptsBySession[sid] || []), { id: uid('q'), prompt: trimmed, images }],
           },
         }));
         return;
       }
-      await get().cancelTurn(sid);
+      await get().cancelTurn(sid, adapterId);
     }
 
     const now = Date.now();
@@ -237,9 +300,10 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
 
     try {
       const convId = state.externalSessionId ?? state.agyConversationId ?? null;
-      const res = await cbs.invokeRpc<{ ok: boolean; error?: string }>(AGY_RPC.PROMPT_SEND, {
+      const res = await cbs.invokeRpc<{ ok: boolean; error?: string }>(agentRpc(adapterId, 'prompt.send'), {
         tabSessionId: sid,
         agyConversationId: convId,
+        externalSessionId: convId,
         prompt: trimmed,
         cwd: state.cwd,
         addDirs: state.addDirs,
@@ -271,7 +335,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
           runningSessions: { ...prev.runningSessions, [sid]: false },
           errorsBySession: {
             ...prev.errorsBySession,
-            [sid]: err instanceof Error ? err.message : '에이전트 어댑터(agent-agy)가 비활성화되어 있습니다.',
+            [sid]: err instanceof Error ? err.message : `에이전트 어댑터(${adapterId})가 비활성화되어 있습니다.`,
           },
         };
       });
@@ -324,11 +388,12 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     });
   },
 
-  cancelTurn: async (tabSessionId) => {
+  cancelTurn: async (tabSessionId, adapterIdOverride) => {
     const cbs = get().callbacks;
+    const adapterId = resolveAdapterForSession(cbs, tabSessionId, adapterIdOverride);
     if (cbs) {
       try {
-        await cbs.invokeRpc(AGY_RPC.PROMPT_CANCEL, { tabSessionId });
+        await cbs.invokeRpc(agentRpc(adapterId, 'prompt.cancel'), { tabSessionId });
       } catch {
         // ignore if adapter disabled
       }
@@ -348,10 +413,13 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       );
       const nextPerms = { ...prev.permissionPrompts };
       delete nextPerms[tabSessionId];
+      const nextQs = { ...prev.questionPrompts };
+      delete nextQs[tabSessionId];
       return {
         messagesBySession: { ...prev.messagesBySession, [tabSessionId]: msgs },
         runningSessions: { ...prev.runningSessions, [tabSessionId]: false },
         permissionPrompts: nextPerms,
+        questionPrompts: nextQs,
       };
     });
   },
@@ -359,8 +427,9 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
   submitAuthCode: async (tabSessionId, code) => {
     const cbs = get().callbacks;
     if (!cbs) return;
+    const adapterId = resolveAdapterForSession(cbs, tabSessionId);
     try {
-      const ok = await cbs.invokeRpc<boolean>(AGY_RPC.AUTH_SUBMIT, { tabSessionId, code });
+      const ok = await cbs.invokeRpc<boolean>(agentRpc(adapterId, 'auth.submitCode'), { tabSessionId, code });
       if (ok) {
         set((prev) => {
           const next = { ...prev.authPrompts };
@@ -376,6 +445,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
   respondPermission: async (tabSessionId, requestId, optionId) => {
     const cbs = get().callbacks;
     if (!cbs) return;
+    const adapterId = resolveAdapterForSession(cbs, tabSessionId);
     set((prev) => {
       const next = { ...prev.permissionPrompts };
       if (next[tabSessionId]?.requestId === requestId) {
@@ -384,7 +454,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       return { permissionPrompts: next };
     });
     try {
-      await cbs.invokeRpc<boolean>(AGY_RPC.PERMISSION_RESPOND, {
+      await cbs.invokeRpc<boolean>(agentRpc(adapterId, 'permission.respond'), {
         tabSessionId,
         requestId,
         optionId,
@@ -394,7 +464,40 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     }
   },
 
-  handleAgyEvent: (ev) => {
+  respondQuestion: async (tabSessionId, requestId, answers) => {
+    const cbs = get().callbacks;
+    if (!cbs) return;
+    const adapterId = resolveAdapterForSession(cbs, tabSessionId);
+    set((prev) => {
+      const next = { ...prev.questionPrompts };
+      if (next[tabSessionId]?.requestId === requestId) {
+        delete next[tabSessionId];
+      }
+      return { questionPrompts: next };
+    });
+    try {
+      await cbs.invokeRpc<boolean>(agentRpc(adapterId, 'question.respond'), {
+        tabSessionId,
+        requestId,
+        answers,
+      });
+    } catch {
+      // ignore
+    }
+  },
+
+  dismissNotice: (tabSessionId, noticeId) => {
+    set((prev) => ({
+      noticesBySession: {
+        ...prev.noticesBySession,
+        [tabSessionId]: (prev.noticesBySession[tabSessionId] || []).filter((n) => n.id !== noticeId),
+      },
+    }));
+  },
+
+  handleAgyEvent: (ev) => get().handleAgentEvent(ev),
+
+  handleAgentEvent: (ev) => {
     if (ev.type === 'commands_update') {
       if (ev.commands.length > 0) {
         set({ availableCommands: ev.commands });
@@ -407,6 +510,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
 
     if (ev.type === 'session_init') {
       cbs?.updateTabStateBySession(sid, {
+        ...(ev.adapterId ? { adapterId: ev.adapterId } : {}),
         externalSessionId: ev.agyConversationId,
         agyConversationId: ev.agyConversationId,
         ...(ev.model ? { model: ev.model } : {}),
@@ -451,6 +555,37 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       return;
     }
 
+    if (ev.type === 'question_request') {
+      set((prev) => ({
+        questionPrompts: {
+          ...prev.questionPrompts,
+          [sid]: ev.request,
+        },
+      }));
+      return;
+    }
+
+    if (ev.type === 'question_cleared') {
+      set((prev) => {
+        if (!prev.questionPrompts[sid]) return prev;
+        if (ev.requestId && prev.questionPrompts[sid].requestId !== ev.requestId) return prev;
+        const next = { ...prev.questionPrompts };
+        delete next[sid];
+        return { questionPrompts: next };
+      });
+      return;
+    }
+
+    if (ev.type === 'notice') {
+      set((prev) => ({
+        noticesBySession: {
+          ...prev.noticesBySession,
+          [sid]: [...(prev.noticesBySession[sid] || []).slice(-3), { id: uid('nt'), level: ev.level, text: ev.text }],
+        },
+      }));
+      return;
+    }
+
     if (ev.type === 'metrics') {
       set((prev) => ({
         metricsBySession: { ...prev.metricsBySession, [sid]: ev.metrics },
@@ -461,9 +596,37 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     if (ev.type === 'usage_delta') {
       set((prev) => {
         const cur = prev.metricsBySession[sid];
-        if (!cur) return prev;
-        const win = ev.size > 0 ? ev.size : cur.contextWindow;
-        const usedPct = win > 0 ? Number(((ev.used / win) * 100).toFixed(1)) : cur.usedPct;
+        const win = ev.size > 0 ? ev.size : cur?.contextWindow || 200_000;
+        const usedPct = win > 0 ? Number(((ev.used / win) * 100).toFixed(1)) : 0;
+        if (!cur) {
+          return {
+            metricsBySession: {
+              ...prev.metricsBySession,
+              [sid]: {
+                conversationId: sid,
+                model: '',
+                invocations: 1,
+                currentContext: ev.used,
+                contextWindow: win,
+                usedPct,
+                lastCacheRead: 0,
+                lastInputTokens: ev.used,
+                lastCacheHitPct: 0,
+                lastCallAt: Date.now(),
+                lastTurnTokens: ev.used,
+                lastTurnCalls: 1,
+                lastTurnOutput: 0,
+                tokPerSec: null,
+                sessionCumulative: ev.used,
+                overallCacheHitPct: 0,
+                toolDeltas: [],
+                recentTurns: [],
+                quotaBuckets: [],
+                quotaUpdatedAt: null,
+              },
+            },
+          };
+        }
         return {
           metricsBySession: {
             ...prev.metricsBySession,
@@ -521,6 +684,32 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
           } else {
             blocks.push({ id: uid('st'), type: 'steps', items: ev.steps });
           }
+          list[list.length - 1] = { ...last, blocks };
+        }
+        return { messagesBySession: { ...prev.messagesBySession, [sid]: list } };
+      });
+      return;
+    }
+
+    if (ev.type === 'plan_proposed') {
+      const now = Date.now();
+      set((prev) => {
+        const list = [...(prev.messagesBySession[sid] || [])];
+        let last = list[list.length - 1];
+        if (!last || last.role !== 'assistant') {
+          last = {
+            id: uid('a'),
+            role: 'assistant',
+            text: '',
+            tools: [],
+            blocks: [{ id: uid('pl'), type: 'plan', text: ev.plan }],
+            createdAt: now,
+            streaming: true,
+          };
+          list.push(last);
+        } else {
+          const blocks = closeOpenThinkingBlocks([...(last.blocks || [])], now);
+          blocks.push({ id: uid('pl'), type: 'plan', text: ev.plan });
           list[list.length - 1] = { ...last, blocks };
         }
         return { messagesBySession: { ...prev.messagesBySession, [sid]: list } };
@@ -632,6 +821,26 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       return;
     }
 
+    if (ev.type === 'tool_delta') {
+      set((prev) => {
+        const list = [...(prev.messagesBySession[sid] || [])];
+        const last = list[list.length - 1];
+        if (!last || last.role !== 'assistant') return prev;
+        const append = (cur?: string) => ((cur || '') + ev.delta).slice(-2400);
+        const tools = (last.tools || []).map((t) =>
+          t.id === ev.toolId ? { ...t, outputPreview: append(t.outputPreview) } : t
+        );
+        const blocks = (last.blocks || []).map((b) =>
+          b.type === 'tool' && b.tool.id === ev.toolId
+            ? { ...b, tool: { ...b.tool, outputPreview: append(b.tool.outputPreview) } }
+            : b
+        );
+        list[list.length - 1] = { ...last, tools, blocks };
+        return { messagesBySession: { ...prev.messagesBySession, [sid]: list } };
+      });
+      return;
+    }
+
     if (ev.type === 'tool_result') {
       const now = Date.now();
       set((prev) => {
@@ -641,12 +850,12 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
         const nextStatus: 'done' | 'error' = ev.isError ? 'error' : 'done';
         const tools = (last.tools || []).map((t) =>
           t.id === ev.toolId || (!ev.toolId && t.status === 'running')
-            ? { ...t, outputPreview: ev.output, status: nextStatus, endedAt: now }
+            ? { ...t, outputPreview: ev.output || t.outputPreview, status: nextStatus, endedAt: now }
             : t
         );
         const blocks = (last.blocks || []).map((b) =>
           b.type === 'tool' && (b.tool.id === ev.toolId || (!ev.toolId && b.tool.status === 'running'))
-            ? { ...b, tool: { ...b.tool, outputPreview: ev.output, status: nextStatus, endedAt: now } }
+            ? { ...b, tool: { ...b.tool, outputPreview: ev.output || b.tool.outputPreview, status: nextStatus, endedAt: now } }
             : b
         );
         list[list.length - 1] = { ...last, tools, blocks };
@@ -686,12 +895,15 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
         delete nextAuth[sid];
         const nextPerms = { ...prev.permissionPrompts };
         delete nextPerms[sid];
+        const nextQs = { ...prev.questionPrompts };
+        delete nextQs[sid];
         return {
           messagesBySession: { ...prev.messagesBySession, [sid]: list },
           runningSessions: { ...prev.runningSessions, [sid]: false },
           queuedPromptsBySession: { ...prev.queuedPromptsBySession, [sid]: remainingQueue },
           authPrompts: nextAuth,
           permissionPrompts: nextPerms,
+          questionPrompts: nextQs,
           errorsBySession: ev.error ? { ...prev.errorsBySession, [sid]: ev.error } : prev.errorsBySession,
         };
       });
@@ -715,6 +927,8 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       const queuedPromptsBySession = { ...prev.queuedPromptsBySession };
       const authPrompts = { ...prev.authPrompts };
       const permissionPrompts = { ...prev.permissionPrompts };
+      const questionPrompts = { ...prev.questionPrompts };
+      const noticesBySession = { ...prev.noticesBySession };
       const errorsBySession = { ...prev.errorsBySession };
       delete messagesBySession[tabSessionId];
       delete metricsBySession[tabSessionId];
@@ -722,6 +936,8 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       delete queuedPromptsBySession[tabSessionId];
       delete authPrompts[tabSessionId];
       delete permissionPrompts[tabSessionId];
+      delete questionPrompts[tabSessionId];
+      delete noticesBySession[tabSessionId];
       delete errorsBySession[tabSessionId];
       return {
         messagesBySession,
@@ -730,6 +946,8 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
         queuedPromptsBySession,
         authPrompts,
         permissionPrompts,
+        questionPrompts,
+        noticesBySession,
         errorsBySession,
       };
     });

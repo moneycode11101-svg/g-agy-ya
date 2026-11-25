@@ -4,11 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import type { BuiltinPluginPackage, DeskHostContext, HostPluginModule } from '../../src/kernel/shared/types';
 import { AGENT_AGY_MANIFEST } from '../../src/plugins/agent-agy/manifest';
+import { AGENT_CLAUDE_MANIFEST } from '../../src/plugins/agent-claude/manifest';
+import { AGENT_CODEX_MANIFEST } from '../../src/plugins/agent-codex/manifest';
 import { HUD_TOKEN_BAR_MANIFEST } from '../../src/plugins/hud-token-bar/manifest';
 import { PANE_CHAT_MANIFEST } from '../../src/plugins/pane-chat/manifest';
 import { RUNTIME_CONTEXT_INSPECTOR_MANIFEST } from '../../src/plugins/runtime-context-inspector/manifest';
 import { SIDEBAR_WORKSPACE_MANIFEST } from '../../src/plugins/sidebar-workspace/manifest';
 import { agentAgyHostPlugin } from './agent-agy/host';
+import { agentClaudeHostPlugin } from './agent-claude/host';
+import { agentCodexHostPlugin } from './agent-codex/host';
 
 const MENTION_SKIP_DIRS = new Set([
   '.git',
@@ -153,6 +157,14 @@ export const AGENT_HOST_PLUGINS: BuiltinPluginPackage[] = [
   {
     manifest: AGENT_AGY_MANIFEST,
     host: agentAgyHostPlugin as HostPluginModule,
+  },
+  {
+    manifest: AGENT_CLAUDE_MANIFEST,
+    host: agentClaudeHostPlugin as HostPluginModule,
+  },
+  {
+    manifest: AGENT_CODEX_MANIFEST,
+    host: agentCodexHostPlugin as HostPluginModule,
   },
   {
     manifest: PANE_CHAT_MANIFEST,

@@ -9,6 +9,8 @@ export const KERNEL_API_VERSION = '1.0.0';
 /** Canonical 14 built-in plugin bundle IDs shared across Kernel, Runtime, Visualizer & Migrations */
 export const BUILTIN_PLUGIN_IDS = {
   AGENT_AGY: 'agent-agy',
+  AGENT_CLAUDE: 'agent-claude',
+  AGENT_CODEX: 'agent-codex',
   PANE_CHAT: 'pane-chat',
   PANE_TERMINAL: 'pane-terminal',
   PANE_WEBVIEW: 'pane-webview',
