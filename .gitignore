@@ -1,4 +1,9 @@
 node_modules/
 dist/
 dist-electron/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+*.log
 .DS_Store
