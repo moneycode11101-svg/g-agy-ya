@@ -245,7 +245,8 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
 
   sendPrompt: async (groupId, tabId, state, prompt, images, delivery) => {
     const trimmed = prompt.trim();
-    if (!trimmed) return;
+    const hasImages = Array.isArray(images) && images.length > 0;
+    if (!trimmed && !hasImages) return;
     const cbs = get().callbacks;
     if (!cbs) return;
 
@@ -286,7 +287,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
 
     const isFirst = (get().messagesBySession[sid]?.length || 0) === 0;
     if (isFirst) {
-      cbs.updateTabTitleIfDefault(groupId, tabId, trimmed);
+      cbs.updateTabTitleIfDefault(groupId, tabId, trimmed || (images?.[0]?.split('/').pop() ?? '이미지'));
     }
 
     set((prev) => ({

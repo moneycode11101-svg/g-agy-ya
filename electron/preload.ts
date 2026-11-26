@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   DeskKernelBridge,
   EventEnvelope,
@@ -101,6 +101,16 @@ const deskKernel: DeskKernelBridge = {
       };
     },
     sendCommand: (cmd: IntrospectionCommand) => ipcRenderer.invoke(IPC.INTROSPECTION_COMMAND, cmd),
+  },
+
+  files: {
+    getPathForFile: (file: File): string => {
+      try {
+        return webUtils.getPathForFile(file) || '';
+      } catch {
+        return '';
+      }
+    },
   },
 };
 

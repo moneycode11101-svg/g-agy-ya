@@ -10,7 +10,6 @@ import {
   FileText,
   Loader2,
   MinusCircle,
-  Paperclip,
   Pencil,
   Search,
   Sparkles,
@@ -21,6 +20,7 @@ import {
 import type { ChatBlock, ChatMessage, ChatStepItem, ToolCallItem } from '../../shared/types';
 import { fmtAgo } from '../../utils/formatKo';
 import { renderSanitizedMarkdown } from './sanitizeMarkdown';
+import { MessageAttachmentGrid } from './AttachmentThumbnail';
 
 function formatElapsedKo(ms: number): string {
   const sec = Math.max(1, Math.round(ms / 1000));
@@ -508,20 +508,9 @@ export const QueuedUserBubble: React.FC<{
       />
       <div className="relative">
         {images && images.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-1.5">
-            {images.map((img) => (
-              <span
-                key={img}
-                className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-md border"
-                style={{ background: 'var(--surface)', borderColor: 'var(--border)', color: 'var(--muted)' }}
-              >
-                <Paperclip size={10} />
-                <span>{img.split('/').pop()}</span>
-              </span>
-            ))}
-          </div>
+          <MessageAttachmentGrid images={images} chipBackground="var(--surface)" />
         )}
-        <div>{prompt}</div>
+        {prompt && <div>{prompt}</div>}
         <div className="mt-1 flex items-center gap-1 text-[10.5px]" style={{ color: 'var(--muted)' }}>
           <Loader2 size={9} className="animate-spin" />
           <span>대기 중</span>
@@ -562,18 +551,7 @@ export const UserMessageBubble: React.FC<{ message: ChatMessage }> = ({ message 
         }}
       >
         {message.images && message.images.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-1.5">
-            {message.images.map((img) => (
-              <span
-                key={img}
-                className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-md border"
-                style={{ background: 'var(--card)', borderColor: 'var(--border)', color: 'var(--muted)' }}
-              >
-                <Paperclip size={10} />
-                <span>{img.split('/').pop()}</span>
-              </span>
-            ))}
-          </div>
+          <MessageAttachmentGrid images={message.images} chipBackground="var(--card)" />
         )}
         {message.text}
       </div>

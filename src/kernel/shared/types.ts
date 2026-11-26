@@ -570,6 +570,9 @@ export interface DeskKernelBridge {
     subscribe(handler: (delta: IntrospectionDelta) => void): () => void;
     sendCommand(cmd: IntrospectionCommand): Promise<{ ok: boolean; error?: string; data?: unknown }>;
   };
+  readonly files?: {
+    getPathForFile(file: File): string;
+  };
 }
 
 // ============================================================================

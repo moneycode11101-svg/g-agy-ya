@@ -3,25 +3,22 @@ import {
   AlertTriangle,
   ArrowRight,
   AtSign,
-  BarChart3,
   Check,
   ChevronDown,
-  ChevronRight,
   ChevronUp,
   Columns2,
   Copy,
   FileText,
   Folder,
   FolderOpen,
-  FolderPlus,
   Globe,
+  Image as ImageIcon,
   KeyRound,
   MessageSquare,
   Minimize2,
   Paperclip,
   Pencil,
   Plus,
-  RefreshCw,
   Rows2,
   Shield,
   ShieldAlert,
@@ -32,6 +29,7 @@ import {
 } from 'lucide-react';
 import {
   BUILTIN_PLUGIN_IDS,
+  getDeskKernelBridge,
   PANE_WIDGET_ANCHORS,
   SlotOutlet,
   useCommandRegistry,
@@ -46,6 +44,8 @@ import type { ChatMessage, ChatMode, SessionMetrics } from '../../shared/types';
 import { agentRpc, type AgentLoadedSession } from '../../shared/agentProtocol';
 import { fmtKo } from '../../utils/formatKo';
 import { AssistantTurnView, UserMessageBubble } from './AssistantTurnView';
+import { ComposerAttachmentStrip } from './AttachmentThumbnail';
+import { ModelPickerPopover } from './ModelPickerPopover';
 import { QuestionPromptCard } from './QuestionPromptCard';
 import { useChatSessionStore, type ChatTabState, type QueuedPromptItem } from './chatStore';
 import type { PaneChatConfig } from './manifest';
@@ -90,6 +90,41 @@ function translatePermissionOption(opt: { optionId: string; name: string; kind?:
     return '거부';
   }
   return opt.name;
+}
+
+function hasExternalFilePayload(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  const types = Array.from(dt.types || []);
+  if (types.includes('Files')) return true;
+  if (dt.items && Array.from(dt.items).some((it) => it.kind === 'file')) return true;
+  return false;
+}
+
+function parseFileUriList(raw: string): string[] {
+  const out: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    if (trimmed.toLowerCase().startsWith('file://')) {
+      try {
+        const u = new URL(trimmed);
+        const decoded = decodeURIComponent(u.pathname);
+        if (decoded) out.push(decoded);
+      } catch {
+        // ignore invalid URI
+      }
+    }
+  }
+  return out;
+}
+
+function readFileAsDataUrl(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
 }
 
 export interface ChatPaneViewProps extends PaneComponentProps<ChatTabState> {
@@ -148,8 +183,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
-  const [activeFamilyId, setActiveFamilyId] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
@@ -162,6 +197,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const modelBtnRef = useRef<HTMLButtonElement | null>(null);
+  const dragDepthRef = useRef(0);
   const isComposingRef = useRef(false);
   const compositionDataRef = useRef('');
   const postSubmitGuardUntilRef = useRef(0);
@@ -225,15 +262,14 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   }, [input]);
 
   useEffect(() => {
-    if (!modelMenuOpen && !modeMenuOpen && !plusMenuOpen) return;
+    if (!modeMenuOpen && !plusMenuOpen) return;
     const onClick = () => {
-      setModelMenuOpen(false);
       setModeMenuOpen(false);
       setPlusMenuOpen(false);
     };
     window.addEventListener('click', onClick);
     return () => window.removeEventListener('click', onClick);
-  }, [modelMenuOpen, modeMenuOpen, plusMenuOpen]);
+  }, [modeMenuOpen, plusMenuOpen]);
 
   // Hydrate & fs.watch with proper cleanup (`unwatchSession`) + race guard (mandatory fix b)
   useEffect(() => {
@@ -270,16 +306,6 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   }, [adapterAvailable, adapterId, ctx.rpc, externalSessionId, hydrateSession, sessionId, setSessionMetrics]);
 
   const modelFamilies = useMemo(() => groupModelsIntoFamilies(availableModels), [availableModels]);
-  const activeModelFamily = useMemo(
-    () => modelFamilies.find((f) => f.variants.some((v) => v.value === state.model)) || null,
-    [modelFamilies, state.model]
-  );
-  const expandedFamily = useMemo(() => {
-    if (activeFamilyId) {
-      return modelFamilies.find((f) => f.id === activeFamilyId) || null;
-    }
-    return activeModelFamily;
-  }, [activeFamilyId, activeModelFamily, modelFamilies]);
 
   const allSlashItems = useMemo<SlashCommandItem[]>(() => {
     const items: SlashCommandItem[] = [...BUILTIN_SLASH_COMMANDS];
@@ -537,7 +563,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
     const ta = textareaRef.current;
     const raw = ta?.value ?? input;
     const text = raw.trim();
-    if (!text) return;
+    if (!text && attachedImages.length === 0) return;
 
     // Force macOS Korean IME to terminate any in-flight composition cleanly so no ghost syllable leaks back
     postSubmitGuardUntilRef.current = Date.now() + 80;
@@ -573,13 +599,138 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
     }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDragEnter = (e: React.DragEvent) => {
+    if (useLayoutStore.getState().draggedTab) return;
+    if (!hasExternalFilePayload(e.dataTransfer)) return;
     e.preventDefault();
-    const files = Array.from(e.dataTransfer.files || []);
-    const paths = files
-      .map((f) => (f as File & { path?: string }).path)
-      .filter((p): p is string => Boolean(p));
-    if (paths.length > 0) setAttachedImages((prev) => [...prev, ...paths]);
+    dragDepthRef.current += 1;
+    setIsFileDragOver(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (useLayoutStore.getState().draggedTab) return;
+    if (!hasExternalFilePayload(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isFileDragOver) setIsFileDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (useLayoutStore.getState().draggedTab) return;
+    if (!hasExternalFilePayload(e.dataTransfer)) return;
+    const related = e.relatedTarget as Node | null;
+    if (!related || !e.currentTarget.contains(related)) {
+      dragDepthRef.current = 0;
+      setIsFileDragOver(false);
+      return;
+    }
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsFileDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    if (useLayoutStore.getState().draggedTab) return;
+    const rawUriList = e.dataTransfer.getData('text/uri-list') || '';
+    const hasFileUriFallback = parseFileUriList(rawUriList).length > 0 || /data:image\//i.test(rawUriList);
+    if (!hasExternalFilePayload(e.dataTransfer) && !hasFileUriFallback) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsFileDragOver(false);
+
+    const bridge = getDeskKernelBridge();
+    const droppedFiles = Array.from(e.dataTransfer.files || []);
+    const localPaths: string[] = [];
+    const memoryImages: File[] = [];
+
+    for (const file of droppedFiles) {
+      const electronPath = bridge?.files?.getPathForFile?.(file) || '';
+      const legacyPath = (file as File & { path?: string }).path || '';
+      const resolved = electronPath || legacyPath;
+      if (resolved) {
+        localPaths.push(resolved);
+      } else if (file.type.startsWith('image/')) {
+        memoryImages.push(file);
+      }
+    }
+
+    // Fallback: parse `file://` or `data:image/` URIs when dragged from browsers or apps without File list
+    const inlineDataUrls: Array<{ dataUrl: string; ext: string }> = [];
+    if (localPaths.length === 0 && memoryImages.length === 0) {
+      const uriList = e.dataTransfer.getData('text/uri-list') || '';
+      for (const p of parseFileUriList(uriList)) {
+        localPaths.push(p);
+      }
+      const dataUriMatch = uriList.match(/data:image\/([a-z0-9+.-]+);base64,[A-Za-z0-9+/=]+/i);
+      if (dataUriMatch) {
+        inlineDataUrls.push({ dataUrl: dataUriMatch[0], ext: dataUriMatch[1].split('+')[0] || 'png' });
+      } else {
+        const html = e.dataTransfer.getData('text/html') || '';
+        const htmlDataMatch = html.match(/src=["'](data:image\/([a-z0-9+.-]+);base64,[^"']+)["']/i);
+        if (htmlDataMatch) {
+          inlineDataUrls.push({ dataUrl: htmlDataMatch[1], ext: htmlDataMatch[2].split('+')[0] || 'png' });
+        }
+      }
+    }
+
+    const nextFilePaths: string[] = [];
+    const nextDirPaths: string[] = [];
+
+    if (localPaths.length > 0) {
+      try {
+        const inspected = await ctx.rpc.invoke<
+          Array<{ path: string; exists: boolean; isDir: boolean; isImage: boolean; name: string }>
+        >('pane-chat:inspectPaths', { paths: Array.from(new Set(localPaths)) });
+        if (Array.isArray(inspected)) {
+          for (const item of inspected) {
+            if (!item.exists) continue;
+            if (item.isDir) {
+              if (item.path !== state.cwd) nextDirPaths.push(item.path);
+            } else {
+              nextFilePaths.push(item.path);
+            }
+          }
+        }
+      } catch {
+        nextFilePaths.push(...localPaths);
+      }
+    }
+
+    for (const file of memoryImages) {
+      const dataUrl = await readFileAsDataUrl(file);
+      if (!dataUrl || !dataUrl.startsWith('data:image/')) continue;
+      try {
+        const saved = await ctx.rpc.invoke<string | null>('pane-chat:saveClipboardImage', {
+          dataUrl,
+          ext: file.type.split('/')[1]?.split('+')[0] || 'png',
+        });
+        if (saved) nextFilePaths.push(saved);
+      } catch {
+        // ignore save error
+      }
+    }
+
+    for (const inlineImg of inlineDataUrls) {
+      try {
+        const saved = await ctx.rpc.invoke<string | null>('pane-chat:saveClipboardImage', inlineImg);
+        if (saved) nextFilePaths.push(saved);
+      } catch {
+        // ignore save error
+      }
+    }
+
+    if (nextFilePaths.length > 0) {
+      setAttachedImages((prev) => Array.from(new Set([...prev, ...nextFilePaths])));
+    }
+    if (nextDirPaths.length > 0) {
+      const mergedDirs = Array.from(new Set([...(state.addDirs || []), ...nextDirPaths]));
+      updateState({ addDirs: mergedDirs });
+    }
+    if (nextFilePaths.length > 0 || nextDirPaths.length > 0) {
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }
   };
 
   const colMaxWidthClass =
@@ -705,12 +856,36 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
 
   return (
     <div
-      className="flex-1 min-h-0 flex flex-col @container"
+      className="relative flex-1 min-h-0 flex flex-col @container"
       style={{ background: 'var(--bg)' }}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={handleDrop}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={(e) => void handleDrop(e)}
       onContextMenu={handlePaneContextMenu}
     >
+      {isFileDragOver && (
+        <div
+          className="pointer-events-none absolute inset-2 z-40 rounded-2xl border-2 border-dashed flex items-center justify-center transition-all"
+          style={{
+            borderColor: 'var(--accent)',
+            background: 'color-mix(in srgb, var(--accent) 8%, transparent)',
+          }}
+        >
+          <div
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium"
+            style={{
+              background: 'var(--card)',
+              color: 'var(--fg)',
+              border: '1px solid color-mix(in srgb, var(--accent) 45%, var(--border))',
+              boxShadow: 'var(--shadow-popover)',
+            }}
+          >
+            <ImageIcon size={15} style={{ color: 'var(--accent)' }} />
+            <span>이미지 · 파일을 여기에 놓아 첨부</span>
+          </div>
+        </div>
+      )}
       {/* 중앙 채팅 스크롤 영역 */}
       <div
         ref={scrollRef}
@@ -1171,11 +1346,13 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
           {/* 플로팅 컴포저 카드 */}
           <form
             onSubmit={(e) => void handleSubmit(e)}
-            className="relative rounded-[22px] border px-4 pt-3 pb-2.5 transition-shadow"
+            className="relative rounded-[22px] border px-4 pt-3 pb-2.5 transition-all"
             style={{
               background: 'var(--card)',
-              borderColor: 'var(--border-strong)',
-              boxShadow: 'var(--shadow-composer)',
+              borderColor: isFileDragOver ? 'var(--accent)' : 'var(--border-strong)',
+              boxShadow: isFileDragOver
+                ? '0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent), var(--shadow-composer)'
+                : 'var(--shadow-composer)',
             }}
           >
             {/* `@` 워크스페이스 파일·폴더 멘션 자동완성 팝오버 */}
@@ -1283,51 +1460,12 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
               </div>
             )}
 
-            {(attachedImages.length > 0 || (state.addDirs && state.addDirs.length > 0)) && (
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {(state.addDirs || []).map((dir) => (
-                  <span
-                    key={`dir:${dir}`}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-mono"
-                    style={{
-                      background: 'color-mix(in srgb, var(--accent) 10%, var(--surface))',
-                      color: 'var(--fg-soft)',
-                    }}
-                    title={`추가 컨텍스트 폴더 (--add-dir): ${dir}`}
-                  >
-                    <FolderPlus size={11} style={{ color: 'var(--accent)' }} />
-                    <span>{dir.split('/').pop() || dir}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveAddDir(dir)}
-                      className="cursor-pointer opacity-60 hover:opacity-100 ml-0.5"
-                      title="추가 폴더 해제"
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-                {attachedImages.map((img) => (
-                  <span
-                    key={img}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-mono"
-                    style={{ background: 'var(--surface)', color: 'var(--fg-soft)' }}
-                    title={img}
-                  >
-                    <Paperclip size={10} style={{ color: 'var(--muted)' }} />
-                    <span>{img.split('/').pop()}</span>
-                    <button
-                      type="button"
-                      onClick={() => setAttachedImages((prev) => prev.filter((x) => x !== img))}
-                      className="cursor-pointer opacity-60 hover:opacity-100"
-                      title="첨부 제거"
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
+            <ComposerAttachmentStrip
+              attachedFiles={attachedImages}
+              addDirs={state.addDirs}
+              onRemoveFile={(img) => setAttachedImages((prev) => prev.filter((x) => x !== img))}
+              onRemoveAddDir={handleRemoveAddDir}
+            />
 
             <textarea
               ref={textareaRef}
@@ -1593,6 +1731,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                 {/* 계층형 모델 선택 팝오버 (Antigravity / Claude / Codex 모델 선택 + 사용량 보기) */}
                 <div className="relative min-w-0">
                   <button
+                    ref={modelBtnRef}
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1601,7 +1740,6 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                       setModelMenuOpen((prev) => {
                         const next = !prev;
                         if (next) {
-                          setActiveFamilyId(activeModelFamily?.id || modelFamilies[0]?.id || null);
                           void refreshModels(false, adapterId);
                         }
                         return next;
@@ -1617,200 +1755,21 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     <ChevronDown size={13} className="shrink-0" style={{ color: 'var(--muted)' }} />
                   </button>
 
-                  {modelMenuOpen && (
-                    <div
-                      onClick={(e) => e.stopPropagation()}
-                      className="absolute bottom-full left-0 mb-2 z-50 flex items-end"
-                    >
-                      <div
-                        className="w-[300px] rounded-2xl border p-1.5"
-                        style={{
-                          background: 'var(--card)',
-                          borderColor: 'var(--border)',
-                          boxShadow: 'var(--shadow-popover)',
-                        }}
-                      >
-                        <div className="px-2.5 py-1.5 flex items-center justify-between gap-2">
-                          <span className="text-[11px] font-semibold" style={{ color: 'var(--muted)' }}>
-                            모델
-                          </span>
-                          <div className="flex items-center gap-1">
-                            <span className="text-[10px] font-mono" style={{ color: 'var(--muted)' }}>
-                              {availableModels.length}개
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => void handleRefreshModels()}
-                              className="p-1 rounded-md hover:bg-[var(--surface)] cursor-pointer"
-                              style={{ color: 'var(--muted)' }}
-                              title="agy models 목록 새로고침"
-                              aria-label="모델 목록 새로고침"
-                            >
-                              <RefreshCw size={11} className={refreshingModels ? 'animate-spin' : ''} />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="space-y-0.5 max-h-[360px] overflow-y-auto scroll-thin">
-                          {modelFamilies.map((fam) => {
-                            const activeVariant = fam.variants.find((v) => v.value === state.model);
-                            const isSelectedFamily = Boolean(activeVariant);
-                            const isExpanded = expandedFamily?.id === fam.id;
-                            const hasMultiple = fam.variants.length > 1;
-                            const shownTier =
-                              activeVariant?.tierLabel ||
-                              fam.variants.find((v) => v.value === fam.defaultVariantValue)?.tierLabel ||
-                              '';
-
-                            return (
-                              <div key={fam.id} className="space-y-1">
-                                <button
-                                  type="button"
-                                  onMouseEnter={() => {
-                                    if (hasMultiple) setActiveFamilyId(fam.id);
-                                    else setActiveFamilyId(null);
-                                  }}
-                                  onClick={() => {
-                                    if (!hasMultiple) {
-                                      requestSwitchModel(fam.defaultVariantValue);
-                                    } else {
-                                      setActiveFamilyId(fam.id);
-                                    }
-                                  }}
-                                  className="w-full text-left px-2.5 py-1.5 rounded-xl text-[12.5px] cursor-pointer transition-colors flex items-center justify-between gap-2"
-                                  style={{
-                                    background: isExpanded
-                                      ? 'var(--surface-active)'
-                                      : isSelectedFamily
-                                        ? 'var(--surface)'
-                                        : undefined,
-                                    color: 'var(--fg)',
-                                  }}
-                                >
-                                  <div className="flex items-center gap-1.5 min-w-0">
-                                    <span
-                                      className="truncate"
-                                      style={{ fontWeight: isSelectedFamily ? 600 : 450 }}
-                                    >
-                                      {fam.name}
-                                    </span>
-                                    {shownTier && (
-                                      <span className="text-[11.5px] shrink-0" style={{ color: 'var(--muted)' }}>
-                                        {shownTier}
-                                      </span>
-                                    )}
-                                    {fam.badge && (
-                                      <span
-                                        className="text-[10px] px-1.5 py-[1px] rounded-full shrink-0"
-                                        style={{
-                                          background:
-                                            fam.badge.tone === 'warn'
-                                              ? 'color-mix(in srgb, var(--warn) 12%, var(--surface))'
-                                              : 'var(--surface)',
-                                          color: fam.badge.tone === 'warn' ? 'var(--warn)' : 'var(--muted)',
-                                        }}
-                                      >
-                                        {fam.badge.label}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <span className="shrink-0 flex items-center" style={{ color: 'var(--muted)' }}>
-                                    {isSelectedFamily ? (
-                                      <Check size={13} style={{ color: 'var(--fg)' }} />
-                                    ) : hasMultiple ? (
-                                      <ChevronRight size={13} />
-                                    ) : null}
-                                  </span>
-                                </button>
-
-                                {/* 좁은 분할 창(<520px)용 인라인 티어 선택 바 */}
-                                {hasMultiple && isExpanded && (
-                                  <div className="flex @[520px]:hidden flex-wrap gap-1 px-2.5 pb-1.5">
-                                    {fam.variants.map((v) => {
-                                      const active = state.model === v.value;
-                                      return (
-                                        <button
-                                          key={v.value}
-                                          type="button"
-                                          onClick={() => requestSwitchModel(v.value)}
-                                          className="px-2 py-0.5 rounded-md text-[11px] cursor-pointer transition-colors"
-                                          style={{
-                                            background: active ? 'var(--fg)' : 'var(--surface)',
-                                            color: active ? 'var(--bg)' : 'var(--fg-soft)',
-                                            fontWeight: active ? 600 : 400,
-                                          }}
-                                        >
-                                          {v.tierLabel || v.rawLabel}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        <div className="border-t mt-1.5 pt-1.5" style={{ borderColor: 'var(--border)' }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setModelMenuOpen(false);
-                              void ctx.commands.execute('settings:open', `${adapterId}-settings`);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded-xl text-[12px] cursor-pointer hover:bg-[var(--surface)] flex items-center justify-between gap-2"
-                            style={{ color: 'var(--fg-soft)' }}
-                          >
-                            <span className="inline-flex items-center gap-2">
-                              <BarChart3 size={13} style={{ color: 'var(--muted)' }} />
-                              <span>사용량 보기</span>
-                            </span>
-                            <ChevronRight size={13} style={{ color: 'var(--muted)' }} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* 데스크톱 너비(>=520px)용 우측 티어 서브메뉴 */}
-                      {expandedFamily && expandedFamily.variants.length > 1 && (
-                        <div
-                          className="hidden @[520px]:block ml-1.5 w-44 rounded-2xl border p-1.5 space-y-0.5"
-                          style={{
-                            background: 'var(--card)',
-                            borderColor: 'var(--border)',
-                            boxShadow: 'var(--shadow-popover)',
-                          }}
-                        >
-                          <div className="px-2.5 py-1">
-                            <div className="text-[11px] font-semibold truncate" style={{ color: 'var(--fg)' }}>
-                              {expandedFamily.name}
-                            </div>
-                            <div className="text-[10px]" style={{ color: 'var(--muted)' }}>
-                              {expandedFamily.id === 'orchestrator' ? '백엔드 모델 선택' : '추론 강도 선택'}
-                            </div>
-                          </div>
-                          {expandedFamily.variants.map((v) => {
-                            const active = state.model === v.value;
-                            return (
-                              <button
-                                key={v.value}
-                                type="button"
-                                onClick={() => requestSwitchModel(v.value)}
-                                className="w-full text-left px-2.5 py-1.5 rounded-xl text-xs cursor-pointer transition-colors hover:bg-[var(--surface)] flex items-center justify-between gap-2"
-                                style={{
-                                  background: active ? 'var(--surface-active)' : undefined,
-                                  fontWeight: active ? 600 : 400,
-                                  color: 'var(--fg)',
-                                }}
-                              >
-                                <span className="truncate">{v.tierLabel || v.rawLabel}</span>
-                                {active && <Check size={12} className="shrink-0" />}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <ModelPickerPopover
+                    open={modelMenuOpen}
+                    anchorRef={modelBtnRef}
+                    onClose={() => setModelMenuOpen(false)}
+                    availableModelsCount={availableModels.length}
+                    modelFamilies={modelFamilies}
+                    currentModel={state.model}
+                    refreshingModels={refreshingModels}
+                    onRefreshModels={() => void handleRefreshModels()}
+                    onSelectModel={requestSwitchModel}
+                    onOpenUsage={() => {
+                      setModelMenuOpen(false);
+                      void ctx.commands.execute('settings:open', `${adapterId}-settings`);
+                    }}
+                  />
                 </div>
 
                 {/* 작업 폴더 칩 */}
@@ -1895,7 +1854,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   )}
                 </div>
 
-                {isRunning && !input.trim() ? (
+                {isRunning && !input.trim() && attachedImages.length === 0 ? (
                   <button
                     type="button"
                     onClick={() => void cancelTurn(sessionId)}
@@ -1909,7 +1868,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                 ) : (
                   <button
                     type="submit"
-                    disabled={!input.trim() || !adapterAvailable}
+                    disabled={(!input.trim() && attachedImages.length === 0) || !adapterAvailable}
                     className="w-7 h-7 rounded-full flex items-center justify-center cursor-pointer transition-all disabled:opacity-35 hover:opacity-90"
                     style={{ background: 'var(--accent)', color: '#fff' }}
                     title={isRunning ? '대기열에 추가 (Enter · ⌥Enter 즉시 전송)' : '전송 (Enter)'}

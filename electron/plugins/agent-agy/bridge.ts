@@ -375,7 +375,8 @@ export class AgyPluginBridge {
     this.killOneShot(req.tabSessionId);
 
     const trimmed = req.prompt.trim();
-    if (!trimmed) return { ok: false, error: '빈 메시지입니다.' };
+    const hasAttachments = Array.isArray(req.images) && req.images.length > 0;
+    if (!trimmed && !hasAttachments) return { ok: false, error: '빈 메시지입니다.' };
 
     // CLI-only meta commands (`/usage`, `/help`, `/changelog`)
     if (CLI_ONLY_SLASH_RE.test(trimmed)) {
@@ -453,9 +454,13 @@ export class AgyPluginBridge {
           sessionId = typeof res?.sessionId === 'string' ? res.sessionId : '';
           resumedModels = this.extractAvailableModels(res);
         } catch (err) {
+          const rawMsg = err instanceof Error ? err.message : 'ACP 세션 생성에 실패했습니다.';
+          const friendly = /authentication required/i.test(rawMsg)
+            ? 'agy CLI 로그인이 필요합니다. 터미널에서 `agy`를 실행해 Google 계정에 로그인한 뒤 다시 시도해 주세요. (Authentication required)'
+            : rawMsg;
           return {
             ok: false,
-            error: err instanceof Error ? err.message : 'ACP 세션 생성에 실패했습니다.',
+            error: friendly,
           };
         }
       }
@@ -1165,8 +1170,14 @@ export class AgyPluginBridge {
     }
 
     const finalText =
-      nonImageRefs.length > 0 ? `${nonImageRefs.join('\n')}\n\n${prompt}` : prompt;
-    blocks.push({ type: 'text', text: finalText });
+      nonImageRefs.length > 0
+        ? prompt
+          ? `${nonImageRefs.join('\n')}\n\n${prompt}`
+          : nonImageRefs.join('\n')
+        : prompt;
+    if (finalText || blocks.length === 0) {
+      blocks.push({ type: 'text', text: finalText || '첨부된 이미지를 확인해 주세요.' });
+    }
     return blocks;
   }
 

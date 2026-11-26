@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog } from 'electron';
+import { BrowserWindow, dialog, nativeImage } from 'electron';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -124,9 +124,110 @@ const paneChatHostPlugin: HostPluginModule = {
         const dir = path.join(os.homedir(), '.gemini', 'antigravity', 'agy-desk-paste');
         fs.mkdirSync(dir, { recursive: true });
         const safeExt = (ext || 'png').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'png';
-        const outPath = path.join(dir, `paste-${Date.now().toString(36)}.${safeExt}`);
+        const suffix = Math.random().toString(36).slice(2, 6);
+        const outPath = path.join(dir, `paste-${Date.now().toString(36)}-${suffix}.${safeExt}`);
         fs.writeFileSync(outPath, buf);
         return outPath;
+      }
+    );
+    ctx.rpc.handle<
+      { paths?: string[] } | undefined,
+      Array<{ path: string; exists: boolean; isDir: boolean; isImage: boolean; name: string }>
+    >('pane-chat:inspectPaths', (payload) => {
+      const IMAGE_EXTS = new Set([
+        '.png',
+        '.jpg',
+        '.jpeg',
+        '.webp',
+        '.gif',
+        '.bmp',
+        '.svg',
+        '.avif',
+        '.heic',
+        '.heif',
+        '.tif',
+        '.tiff',
+        '.ico',
+      ]);
+      const raw = Array.isArray(payload?.paths) ? payload!.paths : [];
+      const results: Array<{ path: string; exists: boolean; isDir: boolean; isImage: boolean; name: string }> = [];
+      for (const p of raw) {
+        if (typeof p !== 'string' || !p.trim()) continue;
+        try {
+          const st = fs.statSync(p);
+          const ext = path.extname(p).toLowerCase();
+          results.push({
+            path: p,
+            exists: true,
+            isDir: st.isDirectory(),
+            isImage: st.isFile() && IMAGE_EXTS.has(ext),
+            name: path.basename(p) || p,
+          });
+        } catch {
+          results.push({
+            path: p,
+            exists: false,
+            isDir: false,
+            isImage: false,
+            name: path.basename(p) || p,
+          });
+        }
+      }
+      return results;
+    });
+    ctx.rpc.handle<{ filePath?: string; maxSize?: number } | undefined, string | null>(
+      'pane-chat:getImageThumbnail',
+      (payload) => {
+        const filePath = payload?.filePath;
+        if (typeof filePath !== 'string' || !filePath.trim()) return null;
+        const MIME_MAP: Record<string, string> = {
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.webp': 'image/webp',
+          '.gif': 'image/gif',
+          '.bmp': 'image/bmp',
+          '.svg': 'image/svg+xml',
+          '.avif': 'image/avif',
+          '.ico': 'image/x-icon',
+          '.heic': 'image/heic',
+          '.heif': 'image/heif',
+          '.tif': 'image/tiff',
+          '.tiff': 'image/tiff',
+        };
+        const ext = path.extname(filePath).toLowerCase();
+        const mime = MIME_MAP[ext];
+        if (!mime) return null;
+        try {
+          const st = fs.statSync(filePath);
+          if (!st.isFile() || st.size === 0) return null;
+          const maxSize = Math.max(48, Math.min(1600, payload?.maxSize ?? 200));
+
+          // SVG / GIF / WebP / AVIF: try nativeImage first for fast thumbnailing (except SVG/GIF)
+          if (ext !== '.svg' && ext !== '.gif') {
+            const img = nativeImage.createFromPath(filePath);
+            if (!img.isEmpty()) {
+              const size = img.getSize();
+              const longest = Math.max(size.width, size.height);
+              const target =
+                longest > maxSize
+                  ? size.width >= size.height
+                    ? img.resize({ width: maxSize, quality: 'good' })
+                    : img.resize({ height: maxSize, quality: 'good' })
+                  : img;
+              return target.toDataURL();
+            }
+          }
+
+          // Fallback for SVG, animated GIF, or formats nativeImage doesn't decode directly
+          if (st.size <= 8 * 1024 * 1024) {
+            const b64 = fs.readFileSync(filePath).toString('base64');
+            return `data:${mime};base64,${b64}`;
+          }
+          return null;
+        } catch {
+          return null;
+        }
       }
     );
     ctx.rpc.handle<{ url?: string }, void>('pane-chat:openExternal', async (payload) => {

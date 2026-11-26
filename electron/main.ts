@@ -61,7 +61,15 @@ function createWindow() {
     console.error(`[renderer:fail-load] ${code} ${desc} ${url}`);
   });
 
+  // Prevent accidental file drops on non-droppable surfaces from navigating the app window away
   const devUrl = process.env.VITE_DEV_SERVER_URL;
+  mainWindow.webContents.on('will-navigate', (ev, navUrl) => {
+    const allowedPrefix = devUrl || `${DESK_APP_SCHEME}://`;
+    if (!navUrl.startsWith(allowedPrefix)) {
+      ev.preventDefault();
+    }
+  });
+
   if (devUrl) {
     void mainWindow.loadURL(devUrl);
   } else {

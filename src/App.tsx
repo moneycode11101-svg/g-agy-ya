@@ -79,9 +79,24 @@ export const App: React.FC = () => {
       },
     });
 
+    const onWindowDragOver = (e: DragEvent) => {
+      if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('Files')) {
+        e.preventDefault();
+      }
+    };
+    const onWindowDrop = (e: DragEvent) => {
+      if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('Files')) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('dragover', onWindowDragOver);
+    window.addEventListener('drop', onWindowDrop);
+
     return () => {
       void offSidebarCmd();
       void offCloseTabCmd();
+      window.removeEventListener('dragover', onWindowDragOver);
+      window.removeEventListener('drop', onWindowDrop);
     };
   }, []);
 
