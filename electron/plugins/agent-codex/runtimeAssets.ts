@@ -46,7 +46,7 @@ function inspectDir(fullPath: string): { isDir: boolean; isSymlink: boolean; rea
  */
 export class CodexRuntimeAssetProvider implements RuntimeAssetProvider {
   readonly adapterPluginId = BUILTIN_PLUGIN_IDS.AGENT_CODEX;
-  readonly adapterLabel = 'Codex CLI (짚)';
+  readonly adapterLabel = 'Codex CLI (codex)';
   private readonly getCodexHome: () => string;
   private lastCwd?: string;
 

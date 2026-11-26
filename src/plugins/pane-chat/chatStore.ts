@@ -716,6 +716,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
           ...prev.authPrompts,
           [sid]: {
             ...prev.authPrompts[sid],
+            title: ev.title,
             url: ev.url,
             message: ev.message,
             mode: ev.mode || (ev.url ? 'code' : 'acp'),

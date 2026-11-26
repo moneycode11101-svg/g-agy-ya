@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,13 +23,19 @@ import { FALLBACK_CODEX_MODELS, type CodexPluginConfig } from '../../../src/plug
 import { TextDeltaCoalescer } from '../agent-core/textDeltaCoalescer';
 import type { CodexQuotaService } from './quota';
 import {
+  buildCodexSpawnEnv,
   CodexAppServerClient,
   CodexRpcError,
   detectCodexCliVersion,
+  resolveCodexBinary,
   resolveCodexHome,
 } from './rpcClient';
 
 const ADAPTER_ID = 'agent-codex';
+const CODEX_AUTH_RE = /authentication required|not logged in|please log in|sign in|unauthorized|missing.*token|auth.*expired/i;
+const CODEX_AUTH_METHODS = [
+  { id: 'codex-login', label: 'ChatGPT · OpenAI 계정으로 Codex CLI 로그인', description: '브라우저에서 공식 `codex login` 완료' },
+];
 
 const CODEX_THREAD_CONFIG: Record<string, unknown> = {
   'tools.update_plan.enabled': true,
@@ -180,6 +187,8 @@ export class CodexPluginBridge {
   private cachedDefaultModel: string | null = null;
   private cachedVersion: string | null = null;
   private cachedModels: { items: AgentModelOption[]; fetchedAt: number } | null = null;
+  private activeLoginProc: ChildProcess | null = null;
+  private activeLoginPromise: Promise<{ ok: boolean; error?: string }> | null = null;
 
   private readonly tabToThread = new Map<string, ActiveThreadState>();
   private readonly threadToTab = new Map<string, string>();
@@ -218,6 +227,105 @@ export class CodexPluginBridge {
 
   attachQuotaService(quota: CodexQuotaService): void {
     this.quota = quota;
+  }
+
+  private emitAuthRequired(tabSessionId: string): void {
+    this.emit({
+      type: 'auth_required',
+      adapterId: ADAPTER_ID,
+      tabSessionId,
+      title: 'Codex CLI 로그인 필요',
+      mode: 'acp',
+      message:
+        '로컬 Codex CLI 로그인이 필요합니다. 아래 버튼을 누르면 브라우저에서 공식 `codex login`을 바로 완료할 수 있습니다.',
+      methods: CODEX_AUTH_METHODS,
+    });
+  }
+
+  async startCliLogin(): Promise<{ ok: boolean; error?: string }> {
+    if (this.activeLoginPromise) return this.activeLoginPromise;
+
+    const cfg = this.getConfig();
+    const bin = resolveCodexBinary(cfg.cliPath);
+
+    this.activeLoginPromise = new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      let settled = false;
+      let errBuf = '';
+      const finish = (res: { ok: boolean; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.activeLoginProc = null;
+        this.activeLoginPromise = null;
+        resolve(res);
+      };
+
+      let proc: ChildProcess;
+      try {
+        proc = spawn(bin, ['login'], {
+          cwd: os.homedir(),
+          env: buildCodexSpawnEnv({ codexHome: cfg.codexHome }),
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        finish({
+          ok: false,
+          error:
+            err instanceof Error && /ENOENT/i.test(err.message)
+              ? 'Codex CLI(`codex`)가 설치되어 있지 않습니다. `npm install -g @openai/codex` 또는 ChatGPT 앱 설치 후 다시 시도해 주세요.'
+              : err instanceof Error
+                ? err.message
+                : 'codex login 실행에 실패했습니다.',
+        });
+        return;
+      }
+
+      this.activeLoginProc = proc;
+      const timer = setTimeout(() => {
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          // ignore
+        }
+        finish({ ok: false, error: '로그인 대기 시간이 초과되었습니다 (3분). 다시 시도해 주세요.' });
+      }, 180_000);
+
+      proc.stderr?.on('data', (chunk: Buffer) => {
+        errBuf = (errBuf + chunk.toString('utf8')).slice(-2048);
+      });
+      proc.on('error', (err) => {
+        const msg = /ENOENT/i.test(err.message)
+          ? 'Codex CLI(`codex`)가 설치되어 있지 않습니다. `npm install -g @openai/codex` 또는 ChatGPT 앱 설치 후 다시 시도해 주세요.'
+          : err.message;
+        finish({ ok: false, error: msg });
+      });
+      proc.on('close', (code) => {
+        if (code === 0) {
+          this.cachedVersion = null;
+          this.cachedModels = null;
+          this.client?.dispose();
+          this.client = null;
+          void this.quota?.fetchLiveQuota(true);
+          this.emit({ type: 'auth_cleared', adapterId: ADAPTER_ID, tabSessionId: '' });
+          finish({ ok: true });
+        } else {
+          const cleanErr = errBuf.trim().split('\n').slice(-2).join(' ');
+          finish({ ok: false, error: cleanErr || `Codex CLI 로그인이 완료되지 않았습니다 (code ${code ?? 1}).` });
+        }
+      });
+    });
+
+    return this.activeLoginPromise;
+  }
+
+  cancelCliLogin(): boolean {
+    if (!this.activeLoginProc) return false;
+    try {
+      this.activeLoginProc.kill('SIGTERM');
+    } catch {
+      // ignore
+    }
+    return true;
   }
 
   getClient(): CodexAppServerClient {
@@ -515,7 +623,7 @@ export class CodexPluginBridge {
     }
   }
 
-  async sendPrompt(req: AgentSendPromptRequest): Promise<{ ok: boolean; error?: string }> {
+  async sendPrompt(req: AgentSendPromptRequest): Promise<{ ok: boolean; error?: string; authRequired?: boolean }> {
     const cfg = this.getConfig();
     const cwd = req.cwd && fs.existsSync(req.cwd) ? req.cwd : os.homedir();
     const effectiveModel = req.model && req.model !== 'default' ? req.model : cfg.defaultModel || 'default';
@@ -678,6 +786,17 @@ export class CodexPluginBridge {
       const msg = this.formatFriendlyCodexError(err);
       const st = this.tabToThread.get(req.tabSessionId);
       if (st) st.pendingTurnStart = false;
+      if (CODEX_AUTH_RE.test(msg)) {
+        this.emitAuthRequired(req.tabSessionId);
+        return { ok: false, authRequired: true, error: 'Codex CLI 로그인이 필요합니다.' };
+      }
+      if (/ENOENT|spawn .*codex/i.test(msg)) {
+        return {
+          ok: false,
+          error:
+            'Codex CLI(`codex`)가 설치되어 있지 않습니다. 터미널에서 `npm install -g @openai/codex` 후 `codex login`을 실행해 주세요.',
+        };
+      }
       return { ok: false, error: msg };
     }
   }
@@ -1353,6 +1472,7 @@ export class CodexPluginBridge {
   }
 
   dispose(): void {
+    this.cancelCliLogin();
     for (const p of this.pendingPermissions.values()) p.resolve(null);
     this.pendingPermissions.clear();
     for (const q of this.pendingQuestions.values()) q.resolve(null);

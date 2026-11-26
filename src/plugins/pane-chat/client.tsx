@@ -227,7 +227,7 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
           <span
             className="w-1.5 h-1.5 rounded-full shrink-0 opacity-75"
             style={{ background: dotColor }}
-            title={adapterId === 'agent-claude' ? 'Claude Code' : 'Codex (짚)'}
+            title={adapterId === 'agent-claude' ? 'Claude Code' : 'Codex CLI'}
           />
         );
       }
@@ -237,7 +237,7 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
     ctx.panes.registerType<ChatTabState>({
       type: 'chat',
       label: '새 채팅 (반중력·Claude·Codex)',
-      description: '반중력 · Claude Code · Codex(짚) 멀티 엔진 대화',
+      description: '반중력 · Claude Code · Codex 멀티 엔진 대화',
       icon: MessageSquare,
       accentColor: '#3b82f6',
       shortcut: '⌘N',
@@ -271,8 +271,8 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
         if (q === 'claude' || q === '클로드') {
           return { score: 110, label: '새 채팅 (Claude Code)', init: { adapterId: 'agent-claude' } };
         }
-        if (q === 'codex' || q === '짚' || q === 'gpt') {
-          return { score: 110, label: '새 채팅 (Codex · 짚)', init: { adapterId: 'agent-codex' } };
+        if (q === 'codex' || q === 'gpt' || q === 'openai') {
+          return { score: 110, label: '새 채팅 (Codex CLI)', init: { adapterId: 'agent-codex' } };
         }
         if (q === 'chat' || q === '채팅' || q === 'agy' || q === '반중력') {
           return { score: 100, label: '새 채팅 (반중력)', init: { adapterId: 'agent-agy' } };
@@ -325,7 +325,7 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
 
     ctx.commands.register({
       id: 'pane-chat:new-codex-chat',
-      title: '새 Codex(짚) 채팅 탭',
+      title: '새 Codex 채팅 탭',
       run: (args) => {
         const init = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
         ctx.workspace.openTab('chat', { ...init, adapterId: BUILTIN_PLUGIN_IDS.AGENT_CODEX });

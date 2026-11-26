@@ -186,6 +186,7 @@ export interface AuthPromptMethod {
 }
 
 export interface AuthPrompt {
+  title?: string;
   url?: string;
   message: string;
   mode?: 'acp' | 'code';
@@ -257,6 +258,7 @@ export type AgyEvent =
       type: 'auth_required';
       adapterId?: string;
       tabSessionId: string;
+      title?: string;
       url?: string;
       message: string;
       mode?: 'acp' | 'code';

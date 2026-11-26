@@ -383,6 +383,7 @@ export class AgyPluginBridge {
     this.emit({
       type: 'auth_required',
       tabSessionId,
+      title: 'agy CLI 로그인 필요',
       mode: 'acp',
       message:
         '로컬 agy CLI 로그인이 풀렸습니다. 아래 버튼을 누르면 브라우저에서 공식 agy CLI 로그인을 바로 완료할 수 있습니다.',

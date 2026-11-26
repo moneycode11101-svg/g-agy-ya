@@ -67,6 +67,8 @@ export const agentClaudeHostPlugin: HostPluginModule<ClaudePluginConfig> = {
       },
       sendPrompt: (req) => bridge.sendPrompt(req),
       cancelTurn: (tabSessionId) => bridge.cancelTurn(tabSessionId),
+      startCliLogin: (methodId) => bridge.startCliLogin(methodId),
+      cancelCliLogin: () => bridge.cancelCliLogin(),
       respondPermission: (tabSessionId, requestId, optionId) =>
         bridge.respondPermission(tabSessionId, requestId, optionId),
       respondQuestion: (tabSessionId, requestId, answers) =>
@@ -108,6 +110,13 @@ export const agentClaudeHostPlugin: HostPluginModule<ClaudePluginConfig> = {
     ctx.rpc.handle<AgentSendPromptRequest>(CLAUDE_RPC.PROMPT_SEND, (payload) => adapterService.sendPrompt(payload));
     ctx.rpc.handle<{ tabSessionId: string }>(CLAUDE_RPC.PROMPT_CANCEL, (payload) =>
       adapterService.cancelTurn(payload.tabSessionId)
+    );
+    ctx.rpc.handle<{ tabSessionId?: string; methodId?: string } | undefined, { ok: boolean; error?: string }>(
+      CLAUDE_RPC.AUTH_LOGIN,
+      async (payload) => await bridge.startCliLogin(payload?.methodId)
+    );
+    ctx.rpc.handle<{ tabSessionId?: string } | undefined, boolean>(CLAUDE_RPC.AUTH_CANCEL, () =>
+      bridge.cancelCliLogin()
     );
     ctx.rpc.handle<{ tabSessionId: string; requestId: string; optionId: string | null }, boolean>(
       CLAUDE_RPC.PERMISSION_RESPOND,

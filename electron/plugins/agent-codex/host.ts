@@ -51,7 +51,7 @@ export const agentCodexHostPlugin: HostPluginModule<CodexPluginConfig> = {
 
     const adapterService: AgentAdapterHostService = {
       id: 'agent-codex',
-      displayName: 'Codex CLI (짚 · app-server)',
+      displayName: 'Codex CLI (app-server)',
       capabilities: {
         quota: true,
         runtimeAssets: true,
@@ -62,6 +62,8 @@ export const agentCodexHostPlugin: HostPluginModule<CodexPluginConfig> = {
       },
       sendPrompt: (req) => bridge.sendPrompt(req),
       cancelTurn: (tabSessionId) => bridge.cancelTurn(tabSessionId),
+      startCliLogin: () => bridge.startCliLogin(),
+      cancelCliLogin: () => bridge.cancelCliLogin(),
       respondPermission: (tabSessionId, requestId, optionId) =>
         bridge.respondPermission(tabSessionId, requestId, optionId),
       respondQuestion: (tabSessionId, requestId, answers) =>
@@ -98,6 +100,13 @@ export const agentCodexHostPlugin: HostPluginModule<CodexPluginConfig> = {
     ctx.rpc.handle<AgentSendPromptRequest>(CODEX_RPC.PROMPT_SEND, (payload) => adapterService.sendPrompt(payload));
     ctx.rpc.handle<{ tabSessionId: string }>(CODEX_RPC.PROMPT_CANCEL, (payload) =>
       adapterService.cancelTurn(payload.tabSessionId)
+    );
+    ctx.rpc.handle<{ tabSessionId?: string; methodId?: string } | undefined, { ok: boolean; error?: string }>(
+      CODEX_RPC.AUTH_LOGIN,
+      async () => await bridge.startCliLogin()
+    );
+    ctx.rpc.handle<{ tabSessionId?: string } | undefined, boolean>(CODEX_RPC.AUTH_CANCEL, () =>
+      bridge.cancelCliLogin()
     );
     ctx.rpc.handle<{ tabSessionId: string; requestId: string; optionId: string | null }, boolean>(
       CODEX_RPC.PERMISSION_RESPOND,

@@ -31,7 +31,7 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.round(text.length / 3.5));
 }
 
-/** Symlink-aware directory check: fixes legacy Dirent.isDirectory() bug that dropped yeop / lee-tools / global skills! */
+/** Symlink-aware directory check: ensures symlinked global plugins and skills are discovered cleanly. */
 function inspectDirEntry(fullPath: string): { isDir: boolean; isSymlink: boolean; realPath?: string } {
   try {
     const lstat = fs.lstatSync(fullPath);
@@ -164,7 +164,7 @@ function execAgySubcommand(args: string[]): Promise<{ ok: boolean; stdout: strin
 
 /**
  * Layer 2 RuntimeAssetProvider for `agent-agy`.
- * - Symlink-aware scanning (tracks `yeop`, `lee-tools/skills/*`, `~/.gemini/config/skills/*`)
+ * - Symlink-aware scanning (tracks `~/.gemini/config/plugins/*`, `~/.gemini/config/skills/*`)
  * - Authoritative `config.json` enabled/disabled status
  * - Real MCP tool schema cache token measurement (`~/.gemini/antigravity-cli/mcp/`)
  * - Workspace `.agents/` & hierarchical `AGENTS.md`/`GEMINI.md` scanning

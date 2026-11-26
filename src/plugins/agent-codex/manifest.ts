@@ -2,7 +2,7 @@ import { BUILTIN_PLUGIN_IDS, KERNEL_API_VERSION, type PluginManifest } from '../
 
 export const AGENT_CODEX_MANIFEST: PluginManifest = {
   id: BUILTIN_PLUGIN_IDS.AGENT_CODEX,
-  name: 'Codex CLI (짚 · app-server)',
+  name: 'Codex CLI (app-server)',
   version: '1.0.0',
   apiVersion: KERNEL_API_VERSION,
   description:
@@ -28,7 +28,7 @@ export const AGENT_CODEX_MANIFEST: PluginManifest = {
       widget: 'text',
       defaultValue: 'default',
       placeholder: 'default (또는 gpt-6.1-sol)',
-      keywords: ['codex', '짚', 'gpt', 'sol', '모델'],
+      keywords: ['codex', 'openai', 'gpt', 'sol', '모델'],
     },
     {
       key: 'defaultEffort',
@@ -68,13 +68,13 @@ export const AGENT_CODEX_MANIFEST: PluginManifest = {
     {
       key: 'codexHome',
       label: 'CODEX_HOME (계정 프로필 폴더)',
-      description: '비워두면 ~/.codex 사용. 멀티 계정(~/.codex-workers/mon1 등)을 지정하면 해당 계정으로 동작합니다.',
+      description: '비워두면 ~/.codex 사용. 별도 프로필 폴더(~/.codex-work 등)를 지정하면 해당 계정으로 동작합니다.',
       group: '경로 · 계정',
       type: 'path',
       widget: 'directory',
       defaultValue: '',
       placeholder: '~/.codex (기본값)',
-      keywords: ['codex_home', '계정', 'mon1', 'mui2', 'home'],
+      keywords: ['codex_home', '계정', '프로필', 'home'],
     },
     {
       key: 'cliPath',

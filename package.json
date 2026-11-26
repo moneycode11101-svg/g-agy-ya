@@ -1,8 +1,13 @@
 {
-  "name": "agy-desk",
+  "name": "g-agy-ya",
   "version": "0.1.0",
   "private": true,
-  "description": "Ultra-lightweight Electron infinite-split workspace for Antigravity CLI with embedded webviews and zero-context-overhead token bar.",
+  "license": "MIT",
+  "description": "제제이야 (g-agy-ya) — Zero-telemetry Electron infinite-split multi-agent desktop workspace for Antigravity (agy), Claude Code, and OpenAI Codex CLI with embedded webviews, PTY terminal, live token HUD, and hot-reloadable Plugin Studio.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moneycode11101-svg/g-agy-ya.git"
+  },
   "main": "dist-electron/main.cjs",
   "scripts": {
     "build:electron": "node scripts/build-electron.mjs",

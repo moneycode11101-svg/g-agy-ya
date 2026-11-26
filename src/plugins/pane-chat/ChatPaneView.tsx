@@ -1181,7 +1181,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   <KeyRound size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--accent)' }} />
                   <div className="min-w-0">
                     <div className="font-semibold" style={{ color: 'var(--fg)' }}>
-                      agy CLI 로그인 필요
+                      {authPrompt.title || `${currentAdapter?.displayName || 'CLI'} 로그인 필요`}
                     </div>
                     <div className="mt-0.5 text-[11.5px] leading-relaxed" style={{ color: 'var(--fg-soft)' }}>
                       {authPrompt.message}
@@ -1278,29 +1278,36 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     </>
                   ) : (
                     <>
-                      <button
-                        type="button"
-                        onClick={() => void startCliLogin(sessionId, 'oauth-personal')}
-                        className="px-3 py-1.5 rounded-lg text-[11.5px] font-medium cursor-pointer transition-opacity hover:opacity-90"
-                        style={{ background: 'var(--accent)', color: '#fff' }}
-                      >
-                        Google 계정으로 CLI 로그인
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void startCliLogin(sessionId, 'oauth-business')}
-                        className="px-2.5 py-1.5 rounded-lg text-[11.5px] font-medium cursor-pointer transition-colors hover:bg-[var(--surface-active)]"
-                        style={{ background: 'var(--surface)', color: 'var(--fg-soft)' }}
-                      >
-                        Enterprise 로그인
-                      </button>
+                      {(authPrompt.methods && authPrompt.methods.length > 0
+                        ? authPrompt.methods
+                        : [{ id: 'oauth-personal', label: 'CLI 로그인' }]
+                      ).map((m, idx) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => void startCliLogin(sessionId, m.id)}
+                          className={
+                            idx === 0
+                              ? 'px-3 py-1.5 rounded-lg text-[11.5px] font-medium cursor-pointer transition-opacity hover:opacity-90'
+                              : 'px-2.5 py-1.5 rounded-lg text-[11.5px] font-medium cursor-pointer transition-colors hover:bg-[var(--surface-active)]'
+                          }
+                          style={
+                            idx === 0
+                              ? { background: 'var(--accent)', color: '#fff' }
+                              : { background: 'var(--surface)', color: 'var(--fg-soft)' }
+                          }
+                          title={m.description}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
                       {registeredPaneTypes['terminal'] && (
                         <button
                           type="button"
                           onClick={() => splitGroup(groupId, 'h', 'terminal', { cwd: state.cwd })}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11.5px] cursor-pointer hover:bg-[var(--surface)]"
                           style={{ color: 'var(--muted)' }}
-                          title="옆에 터미널을 열어 agy 명령어로 직접 로그인"
+                          title="옆에 터미널을 열어 CLI로 직접 로그인"
                         >
                           <Terminal size={12} />
                           <span>터미널 열기</span>

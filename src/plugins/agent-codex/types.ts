@@ -47,6 +47,8 @@ export const CODEX_RPC = {
   SESSIONS_UNWATCH: 'agent-codex:sessions.unwatch',
   PROMPT_SEND: 'agent-codex:prompt.send',
   PROMPT_CANCEL: 'agent-codex:prompt.cancel',
+  AUTH_LOGIN: 'agent-codex:auth.login',
+  AUTH_CANCEL: 'agent-codex:auth.cancel',
   PERMISSION_RESPOND: 'agent-codex:permission.respond',
   QUESTION_RESPOND: 'agent-codex:question.respond',
   QUOTA_GET: 'agent-codex:quota.get',

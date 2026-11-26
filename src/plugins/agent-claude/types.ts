@@ -29,6 +29,8 @@ export const CLAUDE_RPC = {
   SESSIONS_UNWATCH: 'agent-claude:sessions.unwatch',
   PROMPT_SEND: 'agent-claude:prompt.send',
   PROMPT_CANCEL: 'agent-claude:prompt.cancel',
+  AUTH_LOGIN: 'agent-claude:auth.login',
+  AUTH_CANCEL: 'agent-claude:auth.cancel',
   PERMISSION_RESPOND: 'agent-claude:permission.respond',
   QUESTION_RESPOND: 'agent-claude:question.respond',
   QUOTA_GET: 'agent-claude:quota.get',

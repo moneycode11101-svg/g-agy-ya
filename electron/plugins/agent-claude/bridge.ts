@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,6 +30,11 @@ import {
 import type { ClaudeQuotaService } from './quota';
 
 const ADAPTER_ID = 'agent-claude';
+const CLAUDE_AUTH_RE = /not logged in|please run.*login|authentication|unauthenticated|unauthorized|invalid api key|oauth.*expired|login required/i;
+const CLAUDE_AUTH_METHODS = [
+  { id: 'claudeai', label: 'Claude 계정으로 CLI 로그인', description: '브라우저에서 Anthropic 구독 계정 로그인' },
+  { id: 'console', label: 'Anthropic Console 로그인', description: 'API 사용량 과금 계정' },
+];
 
 // Dangerous rm safety patterns blocked automatically in bypass mode (ported from t3code ClaudeAdapterV2)
 const DANGEROUS_RM_PATTERNS = [
@@ -228,6 +234,8 @@ export class ClaudePluginBridge {
   private nextGen = 1;
   private cachedVersion: string | null = null;
   private cachedModels: { items: AgentModelOption[]; fetchedAt: number } | null = null;
+  private activeLoginProc: ChildProcess | null = null;
+  private activeLoginPromise: Promise<{ ok: boolean; error?: string }> | null = null;
 
   constructor(opts: {
     getConfig: () => Readonly<ClaudePluginConfig>;
@@ -262,6 +270,105 @@ export class ClaudePluginBridge {
     if (this.cachedVersion !== null) return this.cachedVersion;
     this.cachedVersion = detectClaudeCliVersion(this.getConfig().cliPath);
     return this.cachedVersion;
+  }
+
+  private emitAuthRequired(tabSessionId: string): void {
+    this.emit({
+      type: 'auth_required',
+      adapterId: ADAPTER_ID,
+      tabSessionId,
+      title: 'Claude Code CLI 로그인 필요',
+      mode: 'acp',
+      message:
+        '로컬 Claude Code CLI 로그인이 필요합니다. 아래 버튼을 누르면 브라우저에서 공식 `claude auth login`을 완료할 수 있습니다.',
+      methods: CLAUDE_AUTH_METHODS,
+    });
+  }
+
+  async startCliLogin(methodId = 'claudeai'): Promise<{ ok: boolean; error?: string }> {
+    if (this.activeLoginPromise) return this.activeLoginPromise;
+
+    const cfg = this.getConfig();
+    const bin = resolveClaudeBinary(cfg.cliPath);
+    const args = ['auth', 'login', ...(methodId === 'console' ? ['--console'] : ['--claudeai'])];
+
+    this.activeLoginPromise = new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      let settled = false;
+      let errBuf = '';
+      const finish = (res: { ok: boolean; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.activeLoginProc = null;
+        this.activeLoginPromise = null;
+        resolve(res);
+      };
+
+      let proc: ChildProcess;
+      try {
+        proc = spawn(bin, args, {
+          cwd: os.homedir(),
+          env: buildClaudeSpawnEnv({ configDir: cfg.configDir }),
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        finish({
+          ok: false,
+          error:
+            err instanceof Error && /ENOENT/i.test(err.message)
+              ? 'Claude Code CLI(`claude`)가 설치되어 있지 않습니다. `npm install -g @anthropic-ai/claude-code`로 설치해 주세요.'
+              : err instanceof Error
+                ? err.message
+                : 'claude auth login 실행에 실패했습니다.',
+        });
+        return;
+      }
+
+      this.activeLoginProc = proc;
+      const timer = setTimeout(() => {
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          // ignore
+        }
+        finish({ ok: false, error: '로그인 대기 시간이 초과되었습니다 (3분). 다시 시도해 주세요.' });
+      }, 180_000);
+
+      proc.stderr?.on('data', (chunk: Buffer) => {
+        errBuf = (errBuf + chunk.toString('utf8')).slice(-2048);
+      });
+      proc.on('error', (err) => {
+        const msg = /ENOENT/i.test(err.message)
+          ? 'Claude Code CLI(`claude`)가 설치되어 있지 않습니다. `npm install -g @anthropic-ai/claude-code`로 설치해 주세요.'
+          : err.message;
+        finish({ ok: false, error: msg });
+      });
+      proc.on('close', (code) => {
+        if (code === 0) {
+          this.cachedVersion = null;
+          this.cachedModels = null;
+          for (const sid of [...this.workers.keys()]) this.closeWorker(sid);
+          void this.quota.fetchLiveQuota(true);
+          this.emit({ type: 'auth_cleared', adapterId: ADAPTER_ID, tabSessionId: '' });
+          finish({ ok: true });
+        } else {
+          const cleanErr = stripAnsi(errBuf).trim().split('\n').slice(-2).join(' ');
+          finish({ ok: false, error: cleanErr || `Claude CLI 로그인이 완료되지 않았습니다 (code ${code ?? 1}).` });
+        }
+      });
+    });
+
+    return this.activeLoginPromise;
+  }
+
+  cancelCliLogin(): boolean {
+    if (!this.activeLoginProc) return false;
+    try {
+      this.activeLoginProc.kill('SIGTERM');
+    } catch {
+      // ignore
+    }
+    return true;
   }
 
   async listModels(force = false): Promise<AgentModelOption[]> {
@@ -304,7 +411,7 @@ export class ClaudePluginBridge {
     }
   }
 
-  async sendPrompt(req: AgentSendPromptRequest): Promise<{ ok: boolean; error?: string }> {
+  async sendPrompt(req: AgentSendPromptRequest): Promise<{ ok: boolean; error?: string; authRequired?: boolean }> {
     suppressClaudeShadowedWarning();
     const cfg = this.getConfig();
     const cwd = req.cwd && fs.existsSync(req.cwd) ? req.cwd : os.homedir();
@@ -370,7 +477,14 @@ export class ClaudePluginBridge {
         configKey,
       });
       if (!opened.ok) {
-        return { ok: false, error: opened.error };
+        if (CLAUDE_AUTH_RE.test(opened.error)) {
+          this.emitAuthRequired(req.tabSessionId);
+          return { ok: false, authRequired: true, error: 'Claude Code CLI 로그인이 필요합니다.' };
+        }
+        const friendly = /ENOENT|spawn .*claude/i.test(opened.error)
+          ? 'Claude Code CLI(`claude`)가 설치되어 있지 않습니다. 터미널에서 `npm install -g @anthropic-ai/claude-code` 후 `claude auth login`을 실행해 주세요.'
+          : opened.error;
+        return { ok: false, error: friendly };
       }
       worker = opened.worker;
     }
@@ -763,11 +877,17 @@ export class ClaudePluginBridge {
       if (!worker.closed && this.workers.get(worker.tabSessionId) === worker && worker.inTurn) {
         const rawErr = err instanceof Error ? err.message : String(err);
         const tail = stderrLines.join('').trim();
-        const isNoSession = tail.includes('No conversation found with session ID');
-        const friendly = isNoSession
-          ? '이전 Claude 세션을 찾을 수 없어 새 세션으로 시작해야 합니다.'
-          : rawErr || tail.slice(-300) || 'Claude Code 프로세스가 종료되었습니다.';
-        this.finishTurn(worker, 1, friendly);
+        const combined = `${rawErr}\n${tail}`;
+        if (CLAUDE_AUTH_RE.test(combined)) {
+          this.finishTurn(worker, 1);
+          this.emitAuthRequired(worker.tabSessionId);
+        } else {
+          const isNoSession = tail.includes('No conversation found with session ID');
+          const friendly = isNoSession
+            ? '이전 Claude 세션을 찾을 수 없어 새 세션으로 시작해야 합니다.'
+            : rawErr || tail.slice(-300) || 'Claude Code 프로세스가 종료되었습니다.';
+          this.finishTurn(worker, 1, friendly);
+        }
       }
     } finally {
       this.clearWorkerBashTails(worker);
@@ -1310,6 +1430,7 @@ export class ClaudePluginBridge {
   }
 
   dispose(): void {
+    this.cancelCliLogin();
     for (const sid of [...this.workers.keys()]) {
       this.closeWorker(sid);
     }

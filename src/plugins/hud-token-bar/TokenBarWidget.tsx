@@ -167,7 +167,7 @@ export const TokenBarWidget: React.FC<TokenBarWidgetProps> = ({ groupId, tab, ct
     activeGroup === 'codex' ? codexBuckets : activeGroup === 'gemini' ? geminiBuckets : claudeBuckets;
   const activeTitle =
     activeGroup === 'codex'
-      ? 'Codex (짚) 한도'
+      ? 'Codex 한도'
       : activeGroup === 'gemini'
         ? 'Gemini 사용 한도'
         : adapterId === 'agent-claude'
