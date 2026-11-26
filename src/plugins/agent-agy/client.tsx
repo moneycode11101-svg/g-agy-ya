@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Cpu, RefreshCw } from 'lucide-react';
+import { Cpu, KeyRound, Loader2, RefreshCw } from 'lucide-react';
 import { SchemaSettingsForm } from '../../kernel/client/SchemaSettingsForm';
 import type { ClientPluginModule, DeskClientContext } from '../../kernel/shared/types';
 import type { ClientAgentAdapterDescriptor } from '../../shared/agentProtocol';
@@ -63,6 +63,32 @@ export const agentAgyClientPlugin: ClientPluginModule<AgyPluginConfig> = {
       const [quota, setQuota] = useState<AccountQuotaSnapshot | null>(null);
       const [loadingQuota, setLoadingQuota] = useState(false);
       const [runtimeInfo, setRuntimeInfo] = useState<AgyRuntimeInfo | null>(null);
+      const [loggingIn, setLoggingIn] = useState(false);
+      const [loginStatus, setLoginStatus] = useState<string | null>(null);
+
+      const handleCliLogin = async () => {
+        setLoggingIn(true);
+        setLoginStatus(null);
+        try {
+          const res = await ctx.rpc.invoke<{ ok: boolean; error?: string }>(AGY_RPC.AUTH_LOGIN, {
+            methodId: 'oauth-personal',
+          });
+          if (res?.ok) {
+            setLoginStatus('CLI 로그인이 완료되었습니다.');
+            void loadQuota(true);
+            void ctx.rpc
+              .invoke<AgyRuntimeInfo>(AGY_RPC.RUNTIME_INFO)
+              .then((info) => setRuntimeInfo(info))
+              .catch(() => {});
+          } else {
+            setLoginStatus(res?.error || '로그인에 실패했습니다.');
+          }
+        } catch (err) {
+          setLoginStatus(err instanceof Error ? err.message : '로그인 요청 실패');
+        } finally {
+          setLoggingIn(false);
+        }
+      };
 
       const loadQuota = async (force = false) => {
         setLoadingQuota(true);
@@ -167,14 +193,46 @@ export const agentAgyClientPlugin: ClientPluginModule<AgyPluginConfig> = {
               )}
               {runtimeInfo && (
                 <div
-                  className="px-4 py-2.5 flex items-center justify-between text-[11.5px]"
+                  className="px-4 py-2.5 flex items-center justify-between gap-3 text-[11.5px]"
                   style={{ borderColor: 'var(--border)', color: 'var(--muted)' }}
                 >
-                  <span>런타임 정보</span>
-                  <span className="font-mono">
-                    agy {runtimeInfo.agyCliVersion}
-                    {runtimeInfo.email ? ` · ${runtimeInfo.email}` : ''}
-                  </span>
+                  <div className="min-w-0">
+                    <div>
+                      <span>런타임 정보 · </span>
+                      <span className="font-mono">
+                        agy {runtimeInfo.agyCliVersion}
+                        {runtimeInfo.email ? ` · ${runtimeInfo.email}` : ''}
+                      </span>
+                    </div>
+                    {loginStatus && (
+                      <div className="mt-0.5 text-[11px]" style={{ color: 'var(--accent)' }}>
+                        {loginStatus}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {loggingIn ? (
+                      <button
+                        type="button"
+                        onClick={() => void ctx.rpc.invoke(AGY_RPC.AUTH_CANCEL)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium cursor-pointer"
+                        style={{ background: 'var(--surface)', color: 'var(--fg-soft)' }}
+                      >
+                        <Loader2 size={11} className="animate-spin" />
+                        <span>로그인 취소</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void handleCliLogin()}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium cursor-pointer hover:opacity-90"
+                        style={{ background: 'var(--accent)', color: '#fff' }}
+                      >
+                        <KeyRound size={11} />
+                        <span>CLI 로그인</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

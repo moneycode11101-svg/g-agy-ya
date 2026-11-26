@@ -67,6 +67,8 @@ export const agentAgyHostPlugin: HostPluginModule<AgyPluginConfig> = {
       sendPrompt: (req) => bridge.sendPrompt(req),
       cancelTurn: (tabSessionId) => bridge.cancelTurn(tabSessionId),
       submitAuthCode: (tabSessionId, code) => bridge.submitAuthCode(tabSessionId, code),
+      startCliLogin: (methodId) => bridge.startCliLogin(methodId),
+      cancelCliLogin: () => bridge.cancelCliLogin(),
       respondPermission: (tabSessionId, requestId, optionId) =>
         bridge.respondPermission(tabSessionId, requestId, optionId),
       watchSession: (tabSessionId, conversationId) => bridge.watchSession(tabSessionId, conversationId),
@@ -128,6 +130,14 @@ export const agentAgyHostPlugin: HostPluginModule<AgyPluginConfig> = {
     ctx.rpc.handle<{ tabSessionId: string; code: string }, boolean>(
       AGY_RPC.AUTH_SUBMIT,
       (payload) => adapterService.submitAuthCode(payload.tabSessionId, payload.code)
+    );
+    ctx.rpc.handle<{ tabSessionId?: string; methodId?: string } | undefined, { ok: boolean; error?: string }>(
+      AGY_RPC.AUTH_LOGIN,
+      async (payload) => await adapterService.startCliLogin(payload?.methodId)
+    );
+    ctx.rpc.handle<{ tabSessionId?: string } | undefined, boolean>(
+      AGY_RPC.AUTH_CANCEL,
+      () => adapterService.cancelCliLogin()
     );
     ctx.rpc.handle<{ tabSessionId: string; requestId: string; optionId: string | null }, boolean>(
       AGY_RPC.PERMISSION_RESPOND,

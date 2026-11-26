@@ -67,9 +67,11 @@ export interface AgentAdapterHostService {
   readonly id: AgentAdapterId;
   readonly displayName: string;
   readonly capabilities: AgentCapabilities;
-  sendPrompt(req: AgentSendPromptRequest): Promise<{ ok: boolean; error?: string }> | { ok: boolean; error?: string };
+  sendPrompt(req: AgentSendPromptRequest): Promise<{ ok: boolean; error?: string; authRequired?: boolean }> | { ok: boolean; error?: string; authRequired?: boolean };
   cancelTurn(tabSessionId: string): Promise<void> | void;
   submitAuthCode?(tabSessionId: string, code: string): boolean;
+  startCliLogin?(methodId?: string): Promise<{ ok: boolean; error?: string }>;
+  cancelCliLogin?(): boolean;
   respondPermission(tabSessionId: string, requestId: string, optionId: string | null): boolean;
   respondQuestion?(tabSessionId: string, requestId: string, answers: Record<string, string | string[]> | null): boolean;
   watchSession?(tabSessionId: string, conversationId: string): SessionMetrics | null;
@@ -102,6 +104,8 @@ export type AgentRpcMethod =
   | 'prompt.send'
   | 'prompt.cancel'
   | 'auth.submitCode'
+  | 'auth.login'
+  | 'auth.cancel'
   | 'permission.respond'
   | 'question.respond'
   | 'quota.get'

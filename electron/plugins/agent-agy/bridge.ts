@@ -24,6 +24,25 @@ import {
 } from './transcript';
 
 const CLI_ONLY_SLASH_RE = /^\/(usage|help|changelog)\b/i;
+const AUTH_REQUIRED_RE = /authentication required|not logged in|please sign in|unauthenticated/i;
+
+const DEFAULT_ACP_AUTH_METHODS: Array<{ id: string; label: string; description?: string }> = [
+  {
+    id: 'oauth-personal',
+    label: 'Google 계정으로 CLI 로그인',
+    description: '브라우저에서 로그인하면 로컬 agy CLI 세션이 자동 갱신됩니다',
+  },
+  {
+    id: 'oauth-business',
+    label: 'Gemini Enterprise 로그인',
+    description: '기업·조직 계정으로 로그인',
+  },
+];
+
+function isAuthRequiredError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || '');
+  return AUTH_REQUIRED_RE.test(msg);
+}
 
 const IMAGE_MIME_BY_EXT: Record<string, string> = {
   '.png': 'image/png',
@@ -225,6 +244,10 @@ export class AgyPluginBridge {
   private cachedVersion: string | null = null;
   private cachedModels: { items: AgyModelOption[]; fetchedAt: number } | null = null;
   private cachedCommands: Array<{ name: string; description: string }> = [];
+  private activeAuthLogin: {
+    promise: Promise<{ ok: boolean; error?: string }>;
+    cancel: () => void;
+  } | null = null;
   private disposed = false;
 
   constructor(opts: {
@@ -356,6 +379,104 @@ export class AgyPluginBridge {
     return false;
   }
 
+  private emitAuthRequired(tabSessionId: string): void {
+    this.emit({
+      type: 'auth_required',
+      tabSessionId,
+      mode: 'acp',
+      message:
+        '로컬 agy CLI 로그인이 풀렸습니다. 아래 버튼을 누르면 브라우저에서 공식 agy CLI 로그인을 바로 완료할 수 있습니다.',
+      methods: DEFAULT_ACP_AUTH_METHODS,
+    });
+  }
+
+  /**
+   * Triggers the official `agy acp` native loopback CLI sign-in (`authenticate` JSON-RPC).
+   * Opens the user's browser, listens on `http://localhost:<port>/auth/callback`, persists credentials
+   * directly into the local `agy` CLI store, and refreshes models + quota on completion.
+   */
+  async startCliLogin(methodId = 'oauth-personal'): Promise<{ ok: boolean; error?: string }> {
+    if (this.activeAuthLogin) {
+      return this.activeAuthLogin.promise;
+    }
+
+    const chosenMethod = methodId?.trim() || 'oauth-personal';
+    let cancelled = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      this.shutdownDaemon('default');
+    };
+
+    const promise = (async (): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const daemon = await this.ensureDaemon('default');
+        if (cancelled) return { ok: false, error: '로그인이 취소되었습니다.' };
+
+        await new Promise<void>((resolve, reject) => {
+          timeoutHandle = setTimeout(() => {
+            cancel();
+            reject(new Error('로그인 대기 시간이 초과되었습니다 (3분). 다시 시도해 주세요.'));
+          }, 180_000);
+
+          this.sendRequest(daemon, 'authenticate', { methodId: chosenMethod })
+            .then(() => {
+              if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+                timeoutHandle = null;
+              }
+              resolve();
+            })
+            .catch((err) => {
+              if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+                timeoutHandle = null;
+              }
+              reject(err);
+            });
+        });
+
+        if (cancelled) return { ok: false, error: '로그인이 취소되었습니다.' };
+
+        // Reset any secondary sandbox daemon so it picks up the fresh CLI credentials
+        this.shutdownDaemon('sandbox');
+        this.cachedModels = null;
+        void this.listModels(true);
+        void this.quota.fetchLiveQuota(true);
+        this.emit({ type: 'auth_cleared', tabSessionId: '' });
+        return { ok: true };
+      } catch (err) {
+        if (cancelled) return { ok: false, error: '로그인이 취소되었습니다.' };
+        const raw = err instanceof Error ? err.message : String(err);
+        if (/cancel/i.test(raw)) {
+          return { ok: false, error: '로그인이 취소되었습니다.' };
+        }
+        return { ok: false, error: raw || 'agy CLI 로그인에 실패했습니다.' };
+      } finally {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+        this.activeAuthLogin = null;
+      }
+    })();
+
+    this.activeAuthLogin = { promise, cancel };
+    return promise;
+  }
+
+  cancelCliLogin(): boolean {
+    if (!this.activeAuthLogin) return false;
+    this.activeAuthLogin.cancel();
+    return true;
+  }
+
   respondPermission(tabSessionId: string, requestId: string, optionId: string | null): boolean {
     const pending = this.pendingPermissions.get(requestId);
     if (!pending || pending.tabSessionId !== tabSessionId) return false;
@@ -371,7 +492,7 @@ export class AgyPluginBridge {
     return true;
   }
 
-  async sendPrompt(req: AgySendPromptRequest): Promise<{ ok: boolean; error?: string }> {
+  async sendPrompt(req: AgySendPromptRequest): Promise<{ ok: boolean; error?: string; authRequired?: boolean }> {
     this.killOneShot(req.tabSessionId);
 
     const trimmed = req.prompt.trim();
@@ -438,7 +559,15 @@ export class AgyPluginBridge {
           sessionId =
             (typeof res?.sessionId === 'string' && res.sessionId) || req.agyConversationId;
           resumedModels = this.extractAvailableModels(res);
-        } catch {
+        } catch (err) {
+          if (isAuthRequiredError(err)) {
+            this.emitAuthRequired(req.tabSessionId);
+            return {
+              ok: false,
+              authRequired: true,
+              error: 'agy CLI 로그인이 필요합니다.',
+            };
+          }
           // Fall back to starting a fresh session if conversation cannot be resumed
           sessionId = null;
         }
@@ -454,13 +583,18 @@ export class AgyPluginBridge {
           sessionId = typeof res?.sessionId === 'string' ? res.sessionId : '';
           resumedModels = this.extractAvailableModels(res);
         } catch (err) {
+          if (isAuthRequiredError(err)) {
+            this.emitAuthRequired(req.tabSessionId);
+            return {
+              ok: false,
+              authRequired: true,
+              error: 'agy CLI 로그인이 필요합니다.',
+            };
+          }
           const rawMsg = err instanceof Error ? err.message : 'ACP 세션 생성에 실패했습니다.';
-          const friendly = /authentication required/i.test(rawMsg)
-            ? 'agy CLI 로그인이 필요합니다. 터미널에서 `agy`를 실행해 Google 계정에 로그인한 뒤 다시 시도해 주세요. (Authentication required)'
-            : rawMsg;
           return {
             ok: false,
-            error: friendly,
+            error: rawMsg,
           };
         }
       }
@@ -599,6 +733,7 @@ export class AgyPluginBridge {
         const msg = err instanceof Error ? err.message : String(err);
         const isCancelled =
           activeBinding.cancelledByUser || /cancel/i.test(msg);
+        const needsAuth = !isCancelled && isAuthRequiredError(msg);
 
         const metrics = analyzeSingleSession(
           activeBinding.sessionId,
@@ -612,8 +747,11 @@ export class AgyPluginBridge {
           type: 'done',
           tabSessionId: activeBinding.tabSessionId,
           exitCode: isCancelled ? 0 : 1,
-          error: isCancelled ? undefined : msg,
+          error: isCancelled || needsAuth ? undefined : msg,
         });
+        if (needsAuth) {
+          this.emitAuthRequired(activeBinding.tabSessionId);
+        }
       })
       .finally(() => {
         if (activeBinding.turnToken === myTurnToken) {
@@ -627,6 +765,7 @@ export class AgyPluginBridge {
 
   dispose(): void {
     this.disposed = true;
+    this.cancelCliLogin();
     for (const id of [...this.oneShotProcs.keys()]) {
       this.killOneShot(id);
     }

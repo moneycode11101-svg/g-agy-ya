@@ -179,9 +179,26 @@ export interface SessionSummary {
   model: string;
 }
 
+export interface AuthPromptMethod {
+  id: string;
+  label: string;
+  description?: string;
+}
+
 export interface AuthPrompt {
-  url: string;
+  url?: string;
   message: string;
+  mode?: 'acp' | 'code';
+  methods?: AuthPromptMethod[];
+  loggingIn?: boolean;
+  error?: string;
+  pendingRetry?: {
+    groupId: string;
+    tabId: string;
+    prompt: string;
+    images?: string[];
+    userMessageId?: string;
+  };
 }
 
 export interface PermissionOption {
@@ -236,7 +253,16 @@ export type AgyEvent =
   | { type: 'question_cleared'; adapterId?: string; tabSessionId: string; requestId?: string }
   | { type: 'usage_delta'; adapterId?: string; tabSessionId: string; used: number; size: number }
   | { type: 'notice'; adapterId?: string; tabSessionId: string; level: 'info' | 'warn' | 'error'; text: string }
-  | { type: 'auth_required'; adapterId?: string; tabSessionId: string; url: string; message: string }
+  | {
+      type: 'auth_required';
+      adapterId?: string;
+      tabSessionId: string;
+      url?: string;
+      message: string;
+      mode?: 'acp' | 'code';
+      methods?: Array<{ id: string; label: string; description?: string }>;
+    }
+  | { type: 'auth_cleared'; adapterId?: string; tabSessionId?: string }
   | { type: 'metrics'; adapterId?: string; tabSessionId: string; metrics: SessionMetrics }
   | { type: 'done'; adapterId?: string; tabSessionId: string; exitCode: number; error?: string };
 

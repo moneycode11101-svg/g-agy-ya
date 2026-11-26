@@ -116,6 +116,9 @@ export interface ChatSessionStoreState {
   clearQueuedPrompts: (tabSessionId: string) => void;
   cancelTurn: (tabSessionId: string, adapterIdOverride?: string) => Promise<void>;
   submitAuthCode: (tabSessionId: string, code: string) => Promise<void>;
+  startCliLogin: (tabSessionId: string, methodId?: string) => Promise<{ ok: boolean; error?: string }>;
+  cancelCliLogin: (tabSessionId: string) => Promise<void>;
+  dismissAuthPrompt: (tabSessionId: string) => void;
   respondPermission: (tabSessionId: string, requestId: string, optionId: string | null) => Promise<void>;
   respondQuestion: (
     tabSessionId: string,
@@ -301,28 +304,57 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
 
     try {
       const convId = state.externalSessionId ?? state.agyConversationId ?? null;
-      const res = await cbs.invokeRpc<{ ok: boolean; error?: string }>(agentRpc(adapterId, 'prompt.send'), {
-        tabSessionId: sid,
-        agyConversationId: convId,
-        externalSessionId: convId,
-        prompt: trimmed,
-        cwd: state.cwd,
-        addDirs: state.addDirs,
-        model: state.model,
-        effort: state.effort,
-        mode: state.mode,
-        images,
-      });
+      const res = await cbs.invokeRpc<{ ok: boolean; error?: string; authRequired?: boolean }>(
+        agentRpc(adapterId, 'prompt.send'),
+        {
+          tabSessionId: sid,
+          agyConversationId: convId,
+          externalSessionId: convId,
+          prompt: trimmed,
+          cwd: state.cwd,
+          addDirs: state.addDirs,
+          model: state.model,
+          effort: state.effort,
+          mode: state.mode,
+          images,
+        }
+      );
 
       if (res && !res.ok) {
         set((prev) => {
-          const list = (prev.messagesBySession[sid] || []).map((m) =>
-            m.streaming ? { ...m, streaming: false, endedAt: Date.now() } : m
-          );
+          const existingAuth = prev.authPrompts[sid];
+          const isAuthFlow = Boolean(res.authRequired || existingAuth);
+          const list = isAuthFlow
+            ? (prev.messagesBySession[sid] || []).filter((m) => m.id !== assistantMsg.id)
+            : (prev.messagesBySession[sid] || []).map((m) =>
+                m.streaming ? { ...m, streaming: false, endedAt: Date.now() } : m
+              );
+          const nextAuthPrompts = isAuthFlow
+            ? {
+                ...prev.authPrompts,
+                [sid]: {
+                  ...existingAuth,
+                  mode: existingAuth?.mode || ('acp' as const),
+                  message:
+                    existingAuth?.message ||
+                    '로컬 agy CLI 로그인이 풀렸습니다. 아래 버튼으로 바로 다시 로그인할 수 있습니다.',
+                  pendingRetry: {
+                    groupId,
+                    tabId,
+                    prompt: trimmed,
+                    images,
+                    userMessageId: userMsg.id,
+                  },
+                },
+              }
+            : prev.authPrompts;
           return {
             messagesBySession: { ...prev.messagesBySession, [sid]: list },
             runningSessions: { ...prev.runningSessions, [sid]: false },
-            errorsBySession: { ...prev.errorsBySession, [sid]: res.error || '실행 실패' },
+            authPrompts: nextAuthPrompts,
+            errorsBySession: isAuthFlow
+              ? { ...prev.errorsBySession, [sid]: '' }
+              : { ...prev.errorsBySession, [sid]: res.error || '실행 실패' },
           };
         });
       }
@@ -443,6 +475,136 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     }
   },
 
+  startCliLogin: async (tabSessionId, methodId = 'oauth-personal') => {
+    const cbs = get().callbacks;
+    if (!cbs) return { ok: false, error: '초기화되지 않았습니다.' };
+    const adapterId = resolveAdapterForSession(cbs, tabSessionId);
+
+    set((prev) => {
+      const cur = prev.authPrompts[tabSessionId];
+      if (!cur) return prev;
+      return {
+        authPrompts: {
+          ...prev.authPrompts,
+          [tabSessionId]: { ...cur, loggingIn: true, error: undefined },
+        },
+        errorsBySession: { ...prev.errorsBySession, [tabSessionId]: '' },
+      };
+    });
+
+    try {
+      const res = await cbs.invokeRpc<{ ok: boolean; error?: string }>(
+        agentRpc(adapterId, 'auth.login'),
+        { tabSessionId, methodId }
+      );
+      if (res?.ok) {
+        const retry = get().authPrompts[tabSessionId]?.pendingRetry;
+        set((prev) => {
+          const nextAuth = { ...prev.authPrompts };
+          for (const sid of Object.keys(nextAuth)) {
+            if (resolveAdapterForSession(cbs, sid) === adapterId) {
+              delete nextAuth[sid];
+            }
+          }
+          const nextErrors = { ...prev.errorsBySession };
+          nextErrors[tabSessionId] = '';
+          const nextMsgs = { ...prev.messagesBySession };
+          if (retry?.userMessageId && nextMsgs[tabSessionId]) {
+            nextMsgs[tabSessionId] = nextMsgs[tabSessionId].filter((m) => m.id !== retry.userMessageId);
+          }
+          return {
+            authPrompts: nextAuth,
+            errorsBySession: nextErrors,
+            messagesBySession: nextMsgs,
+          };
+        });
+
+        void get().refreshModels(true, adapterId);
+        void get().refreshAccountQuota(true, adapterId);
+
+        if (retry) {
+          const target = cbs.findTabBySessionId(tabSessionId);
+          if (target) {
+            void get().sendPrompt(
+              target.groupId,
+              target.tabId,
+              target.state,
+              retry.prompt,
+              retry.images
+            );
+          }
+        } else {
+          set((prev) => ({
+            noticesBySession: {
+              ...prev.noticesBySession,
+              [tabSessionId]: [
+                ...(prev.noticesBySession[tabSessionId] || []).slice(-3),
+                { id: uid('n'), level: 'info', text: 'agy CLI 로그인이 완료되었습니다.' },
+              ],
+            },
+          }));
+        }
+        return { ok: true };
+      }
+
+      const errMsg = res?.error || 'agy CLI 로그인에 실패했습니다.';
+      set((prev) => {
+        const cur = prev.authPrompts[tabSessionId];
+        if (!cur) return prev;
+        return {
+          authPrompts: {
+            ...prev.authPrompts,
+            [tabSessionId]: { ...cur, loggingIn: false, error: errMsg },
+          },
+        };
+      });
+      return { ok: false, error: errMsg };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'agy CLI 로그인 요청에 실패했습니다.';
+      set((prev) => {
+        const cur = prev.authPrompts[tabSessionId];
+        if (!cur) return prev;
+        return {
+          authPrompts: {
+            ...prev.authPrompts,
+            [tabSessionId]: { ...cur, loggingIn: false, error: errMsg },
+          },
+        };
+      });
+      return { ok: false, error: errMsg };
+    }
+  },
+
+  cancelCliLogin: async (tabSessionId) => {
+    const cbs = get().callbacks;
+    if (!cbs) return;
+    const adapterId = resolveAdapterForSession(cbs, tabSessionId);
+    try {
+      await cbs.invokeRpc(agentRpc(adapterId, 'auth.cancel'), { tabSessionId });
+    } catch {
+      // ignore
+    }
+    set((prev) => {
+      const cur = prev.authPrompts[tabSessionId];
+      if (!cur) return prev;
+      return {
+        authPrompts: {
+          ...prev.authPrompts,
+          [tabSessionId]: { ...cur, loggingIn: false },
+        },
+      };
+    });
+  },
+
+  dismissAuthPrompt: (tabSessionId) => {
+    set((prev) => {
+      if (!prev.authPrompts[tabSessionId]) return prev;
+      const next = { ...prev.authPrompts };
+      delete next[tabSessionId];
+      return { authPrompts: next };
+    });
+  },
+
   respondPermission: async (tabSessionId, requestId, optionId) => {
     const cbs = get().callbacks;
     if (!cbs) return;
@@ -506,8 +668,31 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       return;
     }
 
-    const sid = ev.tabSessionId;
     const cbs = get().callbacks;
+
+    if (ev.type === 'auth_cleared') {
+      const targetSid = ev.tabSessionId;
+      set((prev) => {
+        if (targetSid) {
+          if (!prev.authPrompts[targetSid]) return prev;
+          const next = { ...prev.authPrompts };
+          delete next[targetSid];
+          return { authPrompts: next };
+        }
+        const evAdapter = ev.adapterId;
+        if (!evAdapter) return { authPrompts: {} };
+        const next = { ...prev.authPrompts };
+        for (const k of Object.keys(next)) {
+          if (resolveAdapterForSession(cbs, k) === evAdapter) {
+            delete next[k];
+          }
+        }
+        return { authPrompts: next };
+      });
+      return;
+    }
+
+    const sid = ev.tabSessionId;
 
     if (ev.type === 'session_init') {
       cbs?.updateTabStateBySession(sid, {
@@ -529,7 +714,15 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
       set((prev) => ({
         authPrompts: {
           ...prev.authPrompts,
-          [sid]: { url: ev.url, message: ev.message },
+          [sid]: {
+            ...prev.authPrompts[sid],
+            url: ev.url,
+            message: ev.message,
+            mode: ev.mode || (ev.url ? 'code' : 'acp'),
+            methods: ev.methods,
+            loggingIn: false,
+            error: undefined,
+          },
         },
       }));
       return;

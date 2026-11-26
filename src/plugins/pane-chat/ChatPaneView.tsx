@@ -14,6 +14,7 @@ import {
   Globe,
   Image as ImageIcon,
   KeyRound,
+  Loader2,
   MessageSquare,
   Minimize2,
   Paperclip,
@@ -161,6 +162,9 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const sendQueuedNow = useChatSessionStore((s) => s.sendQueuedNow);
   const cancelTurn = useChatSessionStore((s) => s.cancelTurn);
   const submitAuthCode = useChatSessionStore((s) => s.submitAuthCode);
+  const startCliLogin = useChatSessionStore((s) => s.startCliLogin);
+  const cancelCliLogin = useChatSessionStore((s) => s.cancelCliLogin);
+  const dismissAuthPrompt = useChatSessionStore((s) => s.dismissAuthPrompt);
   const respondPermission = useChatSessionStore((s) => s.respondPermission);
   const respondQuestion = useChatSessionStore((s) => s.respondQuestion);
   const dismissNotice = useChatSessionStore((s) => s.dismissNotice);
@@ -1172,46 +1176,140 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                 boxShadow: 'var(--shadow-sm)',
               }}
             >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 font-medium">
-                  <KeyRound size={14} style={{ color: 'var(--accent)' }} />
-                  <span>{authPrompt.message}</span>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2 min-w-0">
+                  <KeyRound size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--accent)' }} />
+                  <div className="min-w-0">
+                    <div className="font-semibold" style={{ color: 'var(--fg)' }}>
+                      agy CLI 로그인 필요
+                    </div>
+                    <div className="mt-0.5 text-[11.5px] leading-relaxed" style={{ color: 'var(--fg-soft)' }}>
+                      {authPrompt.message}
+                    </div>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void openExternalSafe(authPrompt.url)}
-                  className="px-3 py-1 rounded-lg text-[11px] font-medium cursor-pointer shrink-0"
-                  style={{ background: 'var(--accent)', color: '#fff' }}
-                >
-                  Google 로그인 열기
-                </button>
+                {!authPrompt.loggingIn && (
+                  <button
+                    type="button"
+                    onClick={() => dismissAuthPrompt(sessionId)}
+                    className="text-[11px] px-1.5 py-0.5 rounded hover:bg-[var(--surface)] cursor-pointer shrink-0"
+                    style={{ color: 'var(--muted)' }}
+                    title="닫기"
+                    aria-label="로그인 안내 닫기"
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
-              <form
-                className="flex items-center gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (authCode.trim()) {
-                    void submitAuthCode(sessionId, authCode);
-                    setAuthCode('');
-                  }
-                }}
-              >
-                <input
-                  type="text"
-                  value={authCode}
-                  onChange={(e) => setAuthCode(e.target.value)}
-                  placeholder="인증 코드를 붙여넣고 Enter..."
-                  className="flex-1 px-3 py-1.5 rounded-lg border text-xs outline-none"
-                  style={{ background: 'var(--bg)', borderColor: 'var(--border-strong)', color: 'var(--fg)' }}
-                />
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer"
-                  style={{ background: 'var(--fg)', color: 'var(--bg)' }}
+
+              {authPrompt.error && (
+                <div
+                  className="rounded-lg px-2.5 py-1.5 text-[11px]"
+                  style={{
+                    background: 'color-mix(in srgb, var(--danger) 8%, var(--surface))',
+                    color: 'var(--danger)',
+                  }}
                 >
-                  확인
-                </button>
-              </form>
+                  {authPrompt.error}
+                </div>
+              )}
+
+              {authPrompt.mode === 'code' && authPrompt.url ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void openExternalSafe(authPrompt.url!)}
+                      className="px-3 py-1.5 rounded-lg text-[11.5px] font-medium cursor-pointer shrink-0"
+                      style={{ background: 'var(--accent)', color: '#fff' }}
+                    >
+                      Google 로그인 열기
+                    </button>
+                  </div>
+                  <form
+                    className="flex items-center gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (authCode.trim()) {
+                        void submitAuthCode(sessionId, authCode);
+                        setAuthCode('');
+                      }
+                    }}
+                  >
+                    <input
+                      type="text"
+                      value={authCode}
+                      onChange={(e) => setAuthCode(e.target.value)}
+                      placeholder="인증 코드를 붙여넣고 Enter..."
+                      className="flex-1 px-3 py-1.5 rounded-lg border text-xs outline-none"
+                      style={{ background: 'var(--bg)', borderColor: 'var(--border-strong)', color: 'var(--fg)' }}
+                    />
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer"
+                      style={{ background: 'var(--fg)', color: 'var(--bg)' }}
+                    >
+                      확인
+                    </button>
+                  </form>
+                </>
+              ) : (
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  {authPrompt.loggingIn ? (
+                    <>
+                      <div
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11.5px] font-medium"
+                        style={{
+                          background: 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
+                          color: 'var(--accent)',
+                        }}
+                      >
+                        <Loader2 size={12} className="animate-spin" />
+                        <span>브라우저에서 로그인 완료 대기 중...</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void cancelCliLogin(sessionId)}
+                        className="px-2.5 py-1.5 rounded-lg text-[11.5px] cursor-pointer hover:bg-[var(--surface)]"
+                        style={{ color: 'var(--muted)' }}
+                      >
+                        취소
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void startCliLogin(sessionId, 'oauth-personal')}
+                        className="px-3 py-1.5 rounded-lg text-[11.5px] font-medium cursor-pointer transition-opacity hover:opacity-90"
+                        style={{ background: 'var(--accent)', color: '#fff' }}
+                      >
+                        Google 계정으로 CLI 로그인
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void startCliLogin(sessionId, 'oauth-business')}
+                        className="px-2.5 py-1.5 rounded-lg text-[11.5px] font-medium cursor-pointer transition-colors hover:bg-[var(--surface-active)]"
+                        style={{ background: 'var(--surface)', color: 'var(--fg-soft)' }}
+                      >
+                        Enterprise 로그인
+                      </button>
+                      {registeredPaneTypes['terminal'] && (
+                        <button
+                          type="button"
+                          onClick={() => splitGroup(groupId, 'h', 'terminal', { cwd: state.cwd })}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11.5px] cursor-pointer hover:bg-[var(--surface)]"
+                          style={{ color: 'var(--muted)' }}
+                          title="옆에 터미널을 열어 agy 명령어로 직접 로그인"
+                        >
+                          <Terminal size={12} />
+                          <span>터미널 열기</span>
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
