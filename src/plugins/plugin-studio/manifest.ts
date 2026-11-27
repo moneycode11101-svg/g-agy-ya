@@ -12,7 +12,7 @@ export const PLUGIN_STUDIO_MANIFEST: PluginManifest = {
   icon: 'Blocks',
   impactClass: 'instant',
   defaultEnabled: true,
-  locked: false,
+  locked: true,
   entry: {
     host: 'builtin:plugin-studio:host',
     client: 'builtin:plugin-studio:client',
