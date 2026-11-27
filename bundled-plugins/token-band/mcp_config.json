@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "token-band": {
+      "command": "/bin/sh",
+      "args": [
+        "${PLUGIN_ROOT}/bin/run-node.sh",
+        "${PLUGIN_ROOT}/server/mcp_server.bundle.mjs"
+      ]
+    }
+  }
+}

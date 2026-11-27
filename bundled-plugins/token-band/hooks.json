@@ -1,0 +1,11 @@
+{
+  "token-band-hud": {
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "./bin/run-node.sh ./hooks/post_invocation.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}

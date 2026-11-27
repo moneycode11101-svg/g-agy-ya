@@ -44,6 +44,7 @@ Because this whole project started from not being able to add a single bar, **ev
 
 - **UI X-Ray (`⌘⇧X`)**: Inspect which plugin owns any part of the screen at a glance.
 - **Full-Window Plugin Studio (`⌘⇧P`)**: Turn features on or off live without restarting the app (watch the Token Band vanish and pop back in real time above).
+- **Bundled Default Skills & Plugins (`Korean Pack` · `Token Band`)**: On first launch, [`bundled-plugins/korean-pack`](bundled-plugins/korean-pack) (Korean response policy) and [`bundled-plugins/token-band`](bundled-plugins/token-band) (Token Band skill, HUD hook & zero-dependency MCP server) are automatically seeded into `~/.gemini/config/plugins/`. Toggle them anytime in Plugin Studio or reinstall with `npm run install:plugins`.
 - **Build & Mount Your Own**: Point to a local plugin folder and see your edits hot-reload immediately without rebuilding the app ([see sample plugin](examples/sample-focus-timer)).
 
 ---
