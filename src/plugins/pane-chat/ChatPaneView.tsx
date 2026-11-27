@@ -1872,7 +1872,11 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     onSelectModel={requestSwitchModel}
                     onOpenUsage={() => {
                       setModelMenuOpen(false);
-                      void ctx.commands.execute('settings:open', `${adapterId}-settings`);
+                      if (ctx.panes.getType('token-band')) {
+                        void ctx.commands.execute('hud-token-bar:open-global', { splitIfMissing: true });
+                      } else {
+                        void ctx.commands.execute('settings:open', `${adapterId}-settings`);
+                      }
                     }}
                   />
                 </div>

@@ -70,7 +70,15 @@ export const agentCodexHostPlugin: HostPluginModule<CodexPluginConfig> = {
         bridge.respondQuestion(tabSessionId, requestId, answers),
       listSessions: (limit = 30) => bridge.listSessions(limit),
       loadSession: (conversationId) => bridge.loadSession(conversationId),
-      getQuota: (force = false) => quota.fetchLiveQuota(force),
+      getQuota: async (force = false) => {
+        if (force) return quota.fetchLiveQuota(true);
+        const cached = quota.getCachedSnapshot();
+        if (cached.buckets.length > 0) {
+          void quota.fetchLiveQuota(false);
+          return cached;
+        }
+        return quota.fetchLiveQuota(false);
+      },
       listModels: (force = false) => bridge.listModels(force),
       getRuntimeInfo: () => {
         const meta = quota.getAccountMeta();

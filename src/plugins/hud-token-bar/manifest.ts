@@ -12,10 +12,11 @@ export interface HudTokenBarConfig extends Record<string, unknown> {
 
 export const HUD_TOKEN_BAR_MANIFEST: PluginManifest = {
   id: BUILTIN_PLUGIN_IDS.HUD_TOKEN_BAR,
-  name: '실시간 토큰 · 캐시 · 할당량 HUD',
-  version: '1.0.0',
+  name: '토큰 밴드 · 실시간 할당량 HUD',
+  version: '2.0.0',
   apiVersion: `^${KERNEL_API_VERSION}`,
-  description: '채팅 입력창 위 4칸/1줄 초슬림 토큰 바 및 도구별 증가·최근 턴·계정 할당량 드로어 (끄면 토큰 바만 즉시 숨김)',
+  description:
+    '채팅 입력창 위 엔진·모델 1:1 로컬 토큰 바 HUD + 3사(반중력·Claude·Codex) 통합 전역 토큰 밴드 대시보드 페이지',
   layer: 'app',
   category: 'chat-widget',
   icon: 'gauge',
@@ -57,7 +58,28 @@ export const HUD_TOKEN_BAR_MANIFEST: PluginManifest = {
     },
   ],
   contributes: {
-    slots: ['pane.widget', 'context-menu.item', 'settings.section'],
+    slots: [
+      'pane.widget',
+      'pane.type',
+      'sidebar.section',
+      'titlebar.actions',
+      'context-menu.item',
+      'settings.section',
+    ],
+    paneTypes: [
+      {
+        type: 'token-band',
+        label: '토큰 밴드',
+        icon: 'gauge',
+      },
+    ],
+    commands: [
+      {
+        id: 'hud-token-bar:open-global',
+        title: '토큰 밴드 통합 보드 열기',
+        defaultShortcut: 'Mod+Shift+U',
+      },
+    ],
   },
 };
 

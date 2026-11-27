@@ -1,4 +1,5 @@
 import type { AccountQuotaSnapshot, QuotaBucket, QuotaWindow } from '../../../src/shared/types';
+import { loadCachedAdapterQuota, saveCachedAdapterQuota } from '../shared/quotaCache';
 import type { CodexAppServerClient } from './rpcClient';
 
 interface RawRateWindow {
@@ -73,6 +74,12 @@ export class CodexQuotaService {
 
   constructor(opts: { getClient: () => CodexAppServerClient }) {
     this.getClient = opts.getClient;
+    const persisted = loadCachedAdapterQuota('agent-codex');
+    if (persisted && persisted.snapshot.buckets.length > 0) {
+      this.snapshot = persisted.snapshot;
+      if (persisted.email) this.accountEmail = persisted.email;
+      if (persisted.planTier) this.accountPlanType = persisted.planTier;
+    }
   }
 
   getCachedSnapshot(): AccountQuotaSnapshot {
@@ -141,6 +148,10 @@ export class CodexQuotaService {
         buckets,
         updatedAt: new Date().toISOString(),
       };
+      saveCachedAdapterQuota('agent-codex', this.snapshot, {
+        email: this.accountEmail,
+        planTier: this.accountPlanType,
+      });
       this.emitChange();
     }
   }

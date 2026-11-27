@@ -13,6 +13,8 @@ import type {
   SessionMetrics,
   SessionSummary,
   ToolCallItem,
+  ToolDeltaSummary,
+  TurnHistoryItem,
 } from '../../../src/shared/types';
 import {
   type AgentModelOption,
@@ -161,6 +163,10 @@ interface ActiveThreadState {
   totalCacheRead: number;
   contextWindow: number;
   lastContextUsed: number;
+  pendingToolNames: string[];
+  toolDeltaMap: Map<string, { count: number; deltaTokens: number }>;
+  recentTurns: TurnHistoryItem[];
+  turnStartedAt: number;
 }
 
 interface PendingPermission {
@@ -715,6 +721,10 @@ export class CodexPluginBridge {
           totalCacheRead: 0,
           contextWindow: 400_000,
           lastContextUsed: 0,
+          pendingToolNames: [],
+          toolDeltaMap: new Map(),
+          recentTurns: [],
+          turnStartedAt: 0,
         };
         this.tabToThread.set(req.tabSessionId, state);
         this.threadToTab.set(threadId, req.tabSessionId);
@@ -736,6 +746,8 @@ export class CodexPluginBridge {
 
       // Register pendingTurnStart BEFORE turn/start RPC to eliminate turn/started arrival race!
       state.pendingTurnStart = true;
+      state.turnStartedAt = Date.now();
+      state.pendingToolNames = [];
       state.interrupting = false;
       state.overloadRetries = 0;
       state.emittedFinalTexts.clear();
@@ -1025,6 +1037,15 @@ export class CodexPluginBridge {
         iType === 'webSearch'
       ) {
         state.activeToolIds.delete(itemId);
+        const toolLabel =
+          iType === 'commandExecution'
+            ? 'Bash'
+            : iType === 'fileChange'
+              ? 'Edit'
+              : iType === 'webSearch'
+                ? 'WebSearch'
+                : String(item.tool || item.name || iType);
+        state.pendingToolNames.push(toolLabel);
         const status = String(item.status || 'completed');
         const isError = status === 'failed' || status === 'declined' || Boolean(item.error);
         let output = '';
@@ -1183,6 +1204,7 @@ export class CodexPluginBridge {
         : Number(last?.outputTokens || 0);
     state.tokenBaseline = curTotal;
 
+    const prevCtx = state.lastContextUsed;
     // Codex reports cachedInputTokens INSIDE inputTokens! (t3code CodexTurnTokenUsage invariant)
     const clampedCached = Math.min(deltaInput, deltaCached);
     const uncachedInput = Math.max(0, deltaInput - clampedCached);
@@ -1193,8 +1215,48 @@ export class CodexPluginBridge {
     if (lastTotal > 0) state.lastContextUsed = lastTotal;
 
     const used = state.lastContextUsed;
+    if (state.pendingToolNames.length > 0) {
+      const delta = prevCtx > 0 ? Math.max(0, used - prevCtx) : Math.max(0, uncachedInput);
+      const perTool = Math.round(delta / state.pendingToolNames.length);
+      for (const tName of state.pendingToolNames) {
+        const cur = state.toolDeltaMap.get(tName) || { count: 0, deltaTokens: 0 };
+        cur.count += 1;
+        cur.deltaTokens += perTool;
+        state.toolDeltaMap.set(tName, cur);
+      }
+      state.pendingToolNames = [];
+    }
+
     const hitPct = deltaInput > 0 ? Number(((clampedCached / deltaInput) * 100).toFixed(1)) : 0;
     const overallDenom = state.totalInputForCache + state.totalCacheRead;
+    const elapsedSec = state.turnStartedAt > 0 ? (Date.now() - state.turnStartedAt) / 1000 : 0;
+    const tokPerSec = deltaOutput > 0 && elapsedSec >= 0.2 ? Number((deltaOutput / elapsedSec).toFixed(1)) : null;
+    const compacted = prevCtx > 20_000 && used > 0 && used < prevCtx * 0.65;
+    const cacheMiss = state.invocations > 1 && used > 5000 && hitPct < 20;
+    state.recentTurns = [
+      {
+        invocation: state.invocations,
+        contextAtCall: used,
+        cacheHitPct: hitPct,
+        outputTokens: deltaOutput,
+        tokPerSec,
+        compacted,
+        cacheMiss,
+      },
+      ...state.recentTurns,
+    ].slice(0, 20);
+    state.turnStartedAt = Date.now();
+
+    const totalToolDelta = Array.from(state.toolDeltaMap.values()).reduce((sum, x) => sum + x.deltaTokens, 0);
+    const toolDeltas: ToolDeltaSummary[] = Array.from(state.toolDeltaMap.entries())
+      .map(([name, v]) => ({
+        name,
+        count: v.count,
+        deltaTokens: v.deltaTokens,
+        sharePct: totalToolDelta > 0 ? Math.round((v.deltaTokens / totalToolDelta) * 100) : 0,
+      }))
+      .sort((a, b) => b.deltaTokens - a.deltaTokens || b.count - a.count);
+
     const qSnap = this.quota?.getCachedSnapshot() || { buckets: [], updatedAt: null };
 
     const metrics: SessionMetrics = {
@@ -1211,11 +1273,11 @@ export class CodexPluginBridge {
       lastTurnTokens: uncachedInput + deltaOutput,
       lastTurnCalls: 1,
       lastTurnOutput: deltaOutput,
-      tokPerSec: null,
+      tokPerSec,
       sessionCumulative: state.sessionCumulative,
       overallCacheHitPct: overallDenom > 0 ? Number(((state.totalCacheRead / overallDenom) * 100).toFixed(1)) : 0,
-      toolDeltas: [],
-      recentTurns: [],
+      toolDeltas,
+      recentTurns: state.recentTurns,
       quotaBuckets: qSnap.buckets,
       quotaUpdatedAt: qSnap.updatedAt,
     };

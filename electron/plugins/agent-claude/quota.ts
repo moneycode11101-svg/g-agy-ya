@@ -1,5 +1,6 @@
 import os from 'node:os';
 import type { AccountQuotaSnapshot, QuotaBucket } from '../../../src/shared/types';
+import { loadCachedAdapterQuota, saveCachedAdapterQuota } from '../shared/quotaCache';
 import {
   buildClaudeSpawnEnv,
   hasManagedMcpJson,
@@ -77,6 +78,10 @@ export class ClaudeQuotaService {
   constructor(opts: { getConfigDir: () => string; getCliPath: () => string }) {
     this.getConfigDir = opts.getConfigDir;
     this.getCliPath = opts.getCliPath;
+    const persisted = loadCachedAdapterQuota('agent-claude');
+    if (persisted && persisted.snapshot.buckets.length > 0) {
+      this.snapshot = persisted.snapshot;
+    }
   }
 
   getCachedSnapshot(): AccountQuotaSnapshot {
@@ -132,6 +137,7 @@ export class ClaudeQuotaService {
       buckets: [...existing, bucket],
       updatedAt: new Date().toISOString(),
     };
+    saveCachedAdapterQuota('agent-claude', this.snapshot);
     this.emitChange();
   }
 
@@ -147,6 +153,9 @@ export class ClaudeQuotaService {
         this.lastFetchAt = Date.now();
         if (snap.buckets.length > 0 || !this.snapshot.buckets.length) {
           this.snapshot = snap;
+          if (snap.buckets.length > 0) {
+            saveCachedAdapterQuota('agent-claude', snap);
+          }
           this.emitChange();
         }
         return this.snapshot;

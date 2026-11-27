@@ -172,10 +172,8 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
     syncAdapters();
     ctx.services.whenAvailable<ClientAgentAdapterDescriptor>('agent-adapter', (desc) => {
       syncAdapters();
-      if (desc?.id === 'agent-agy') {
-        void useChatSessionStore.getState().refreshAccountQuota(false, desc.id);
-      }
       if (desc?.id) {
+        void useChatSessionStore.getState().refreshAccountQuota(false, desc.id);
         void useChatSessionStore.getState().refreshModels(false, desc.id);
       }
       return () => {

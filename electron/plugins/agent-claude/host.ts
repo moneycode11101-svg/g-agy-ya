@@ -76,7 +76,15 @@ export const agentClaudeHostPlugin: HostPluginModule<ClaudePluginConfig> = {
       listSessions: (limit = 30) => listRecentClaudeSessions(limit, String(ctx.config.get().configDir || '')),
       loadSession: (conversationId) =>
         loadClaudeTranscript(conversationId, quota.getCachedSnapshot(), String(ctx.config.get().configDir || '')),
-      getQuota: (force = false) => quota.fetchLiveQuota(force),
+      getQuota: async (force = false) => {
+        if (force) return quota.fetchLiveQuota(true);
+        const cached = quota.getCachedSnapshot();
+        if (cached.buckets.length > 0) {
+          void quota.fetchLiveQuota(false);
+          return cached;
+        }
+        return quota.fetchLiveQuota(false);
+      },
       listModels: (force = false) => bridge.listModels(force),
       getRuntimeInfo: () => ({
         appVersion: ctx.host.appVersion,

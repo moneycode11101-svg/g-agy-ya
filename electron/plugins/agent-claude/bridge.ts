@@ -11,6 +11,8 @@ import type {
   QuestionItem,
   SessionMetrics,
   ToolCallItem,
+  ToolDeltaSummary,
+  TurnHistoryItem,
 } from '../../../src/shared/types';
 import {
   type AgentModelOption,
@@ -213,6 +215,11 @@ interface ClaudeWorkerSession {
   sessionCumulative: number;
   totalInputForCache: number;
   totalCacheRead: number;
+  lastMeasuredContext: number;
+  pendingToolNames: string[];
+  toolDeltaMap: Map<string, { count: number; deltaTokens: number }>;
+  recentTurns: TurnHistoryItem[];
+  turnStartedAt: number;
   activeBashTails: Map<string, { timer: ReturnType<typeof setInterval>; offset: number; toolId: string }>;
   closed: boolean;
 }
@@ -492,6 +499,8 @@ export class ClaudePluginBridge {
     // Prepare turn state (always fresh UUID per turn to avoid CLI dedup-skipping)
     const turnUuid = crypto.randomUUID();
     worker.inTurn = true;
+    worker.turnStartedAt = Date.now();
+    worker.pendingToolNames = [];
     worker.currentTurnId = `${req.tabSessionId}::${turnUuid}`;
     worker.emittedAnyAssistantText = false;
     worker.streamedTextBlockIds.clear();
@@ -570,6 +579,11 @@ export class ClaudePluginBridge {
       sessionCumulative: 0,
       totalInputForCache: 0,
       totalCacheRead: 0,
+      lastMeasuredContext: 0,
+      pendingToolNames: [],
+      toolDeltaMap: new Map(),
+      recentTurns: [],
+      turnStartedAt: 0,
       activeBashTails: new Map(),
       closed: false,
     };
@@ -1135,11 +1149,28 @@ export class ClaudePluginBridge {
       worker.blockIndexToItemId.clear();
       const u = m?.usage as Record<string, unknown> | undefined;
       if (u) {
+        const inp = Number(u.input_tokens || 0);
+        const cw = Number(u.cache_creation_input_tokens || 0);
+        const cr = Number(u.cache_read_input_tokens || 0);
+        const out = Number(u.output_tokens || 0);
+        const newCtx = inp + cw + cr;
+        if (worker.pendingToolNames.length > 0) {
+          const delta = worker.lastMeasuredContext > 0 ? Math.max(0, newCtx - worker.lastMeasuredContext) : 0;
+          const perTool = Math.round(delta / worker.pendingToolNames.length);
+          for (const tName of worker.pendingToolNames) {
+            const cur = worker.toolDeltaMap.get(tName) || { count: 0, deltaTokens: 0 };
+            cur.count += 1;
+            cur.deltaTokens += perTool;
+            worker.toolDeltaMap.set(tName, cur);
+          }
+          worker.pendingToolNames = [];
+        }
+        if (newCtx > 0) worker.lastMeasuredContext = newCtx;
         worker.streamUsage = {
-          inputTokens: Number(u.input_tokens || 0),
-          cacheCreationTokens: Number(u.cache_creation_input_tokens || 0),
-          cacheReadTokens: Number(u.cache_read_input_tokens || 0),
-          outputTokens: Number(u.output_tokens || 0),
+          inputTokens: inp,
+          cacheCreationTokens: cw,
+          cacheReadTokens: cr,
+          outputTokens: out,
           requestedAt: Date.now(),
         };
         this.emitContextUsage(worker);
@@ -1267,6 +1298,7 @@ export class ClaudePluginBridge {
 
         if (!worker.emittedToolIds.has(toolId)) {
           worker.emittedToolIds.add(toolId);
+          worker.pendingToolNames.push(isSubagent ? `sub:${name}` : name);
           this.textCoalescer.flushTurn(worker.currentTurnId);
           this.thinkingCoalescer.flushTurn(worker.currentTurnId);
           const item: ToolCallItem = {
@@ -1339,15 +1371,58 @@ export class ClaudePluginBridge {
       worker.sessionCumulative += inp + cw + out;
       worker.totalInputForCache += inp + cw;
       worker.totalCacheRead += cr;
+      const prevCtx = worker.lastMeasuredContext;
       const latestCtx = worker.streamUsage
         ? worker.streamUsage.inputTokens +
           worker.streamUsage.cacheCreationTokens +
           worker.streamUsage.cacheReadTokens +
           worker.streamUsage.outputTokens
         : inp + cw + cr + out;
+      if (worker.pendingToolNames.length > 0) {
+        const delta = prevCtx > 0 ? Math.max(0, latestCtx - prevCtx) : 0;
+        const perTool = Math.round(delta / worker.pendingToolNames.length);
+        for (const tName of worker.pendingToolNames) {
+          const cur = worker.toolDeltaMap.get(tName) || { count: 0, deltaTokens: 0 };
+          cur.count += 1;
+          cur.deltaTokens += perTool;
+          worker.toolDeltaMap.set(tName, cur);
+        }
+        worker.pendingToolNames = [];
+      }
+      if (latestCtx > 0) worker.lastMeasuredContext = latestCtx;
+
       const ctxWin = inferContextWindow(worker.model, worker.reportedContextWindows);
       const denom = inp + cw + cr;
+      const hitPct = denom > 0 ? Number(((cr / denom) * 100).toFixed(1)) : 0;
       const overallDenom = worker.totalInputForCache + worker.totalCacheRead;
+      const elapsedSec = worker.turnStartedAt > 0 ? (Date.now() - worker.turnStartedAt) / 1000 : 0;
+      const tokPerSec = out > 0 && elapsedSec >= 0.2 ? Number((out / elapsedSec).toFixed(1)) : null;
+
+      const compacted = prevCtx > 20_000 && latestCtx > 0 && latestCtx < prevCtx * 0.65;
+      const cacheMiss = worker.invocations > 1 && latestCtx > 5000 && hitPct < 20;
+      worker.recentTurns = [
+        {
+          invocation: worker.invocations,
+          contextAtCall: latestCtx,
+          cacheHitPct: hitPct,
+          outputTokens: out,
+          tokPerSec,
+          compacted,
+          cacheMiss,
+        },
+        ...worker.recentTurns,
+      ].slice(0, 20);
+
+      const totalToolDelta = Array.from(worker.toolDeltaMap.values()).reduce((sum, x) => sum + x.deltaTokens, 0);
+      const toolDeltas: ToolDeltaSummary[] = Array.from(worker.toolDeltaMap.entries())
+        .map(([name, v]) => ({
+          name,
+          count: v.count,
+          deltaTokens: v.deltaTokens,
+          sharePct: totalToolDelta > 0 ? Math.round((v.deltaTokens / totalToolDelta) * 100) : 0,
+        }))
+        .sort((a, b) => b.deltaTokens - a.deltaTokens || b.count - a.count);
+
       const qSnap = this.quota.getCachedSnapshot();
       const metrics: SessionMetrics = {
         conversationId: worker.sessionId,
@@ -1358,16 +1433,16 @@ export class ClaudePluginBridge {
         usedPct: ctxWin > 0 ? Number(((latestCtx / ctxWin) * 100).toFixed(1)) : 0,
         lastCacheRead: cr,
         lastInputTokens: inp + cw,
-        lastCacheHitPct: denom > 0 ? Number(((cr / denom) * 100).toFixed(1)) : 0,
+        lastCacheHitPct: hitPct,
         lastCallAt: Date.now(),
         lastTurnTokens: inp + cw + out,
         lastTurnCalls: Number(msg.num_turns || 1),
         lastTurnOutput: out,
-        tokPerSec: null,
+        tokPerSec,
         sessionCumulative: worker.sessionCumulative,
         overallCacheHitPct: overallDenom > 0 ? Number(((worker.totalCacheRead / overallDenom) * 100).toFixed(1)) : 0,
-        toolDeltas: [],
-        recentTurns: [],
+        toolDeltas,
+        recentTurns: worker.recentTurns,
         quotaBuckets: qSnap.buckets,
         quotaUpdatedAt: qSnap.updatedAt,
       };

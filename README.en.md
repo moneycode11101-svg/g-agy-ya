@@ -46,14 +46,18 @@ Stop juggling terminal tabs, browser windows, and separate AI apps. **g-agy-ya**
 - **Image Drag-and-Drop & Thumbnail Strip**: Drag images from Finder, screenshots, or clipboard (`⌘V`) onto any chat pane to stack thumbnails above the composer, with full-size lightbox preview and folder (`--add-dir`) drop support.
 - **Fast Composer Ergonomics**: Live `@` workspace file mentions, `/` slash commands & installed skills autocomplete, and clean Korean IME single-Enter submit.
 
-### 2. Infinite Split Workspace & Live Token HUD
+### 2. Two-Layer Token Band & Infinite Split Workspace
+
+<img src="docs/screenshots/token-band.png" alt="Global Token Band board comparing Antigravity, Claude Code, and Codex quotas and live sessions" width="100%" />
+
+- **Global Token Band Board (`⌘⇧U`)**: Compare all three subscriptions side-by-side—Antigravity (`Gemini` & `Claude·GPT` pools), `Claude Code` (5h / weekly / model-scoped weekly), and `Codex` (5h / weekly)—complete with even-pace markers (`│`), instant disk-cached startup restore, a live list of every open chat session's context & cache hit rate, and aggregated workspace tool `+token` rankings.
+- **1:1 Local Chat HUD**: Above each chat composer, automatically matches the active tab's engine & model (Gemini quota / Antigravity Claude·GPT / Claude Code / Codex) with exact per-model context windows (`1M` / `200K` / `400K`) at zero prompt token overhead.
 
 <img src="docs/screenshots/split-webview.png" alt="Live Token HUD and embedded Webview split view" width="100%" />
 
 - **Recursive Split Tree & Drag-to-Dock**: Split horizontally (`⌘D`) or vertically (`⌘⇧D`) endlessly, drag tabs to any edge to dock, pin/color/rename tabs.
 - **Embedded Chromium Webview (`⌘T`)**: Preview `localhost:3000` / `:5173` apps or documentation right alongside your agent, with one-click DevTools toggle.
 - **Built-In PTY Terminal (`⌘⇧T`) & Git Diff**: Full `xterm.js` terminal and live Git diff viewer as first-class panes.
-- **Zero-Overhead Token & Quota HUD**: Track context fill, cache hit rate, generation speed (`tok/s`), cumulative session tokens, and official 5-hour / weekly quotas without injecting a single token into your prompt.
 
 ### 3. Plugin Studio & UI X-Ray
 
@@ -101,6 +105,7 @@ npm start
 | `⌘D` / `⌘⇧D` | Split right / split down |
 | `⌘T` | Open embedded Webview split |
 | `⌘⇧T` | Open PTY Terminal split |
+| `⌘⇧U` | Open Global Token Band board |
 | `⌘⇧P` | Open Plugin Studio |
 | `⌘⇧X` | Toggle UI X-Ray overlay |
 | `⌘B` | Toggle workspace sidebar |

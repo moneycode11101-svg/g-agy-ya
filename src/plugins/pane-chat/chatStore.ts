@@ -85,6 +85,7 @@ export interface ChatSessionStoreState {
   accountQuota: AccountQuotaSnapshot | null;
   accountQuotaByAdapter: Record<string, AccountQuotaSnapshot>;
   loadingQuota: boolean;
+  loadingQuotaByAdapter: Record<string, boolean>;
   adapterAvailable: boolean;
   availableAdapters: ClientAgentAdapterDescriptor[];
   /** Legacy mirror of `availableModelsByAdapter['agent-agy']` */
@@ -98,6 +99,7 @@ export interface ChatSessionStoreState {
   setAvailableAdapters: (adapters: ClientAgentAdapterDescriptor[]) => void;
   setAccountQuota: (snap: AccountQuotaSnapshot, adapterId?: string) => void;
   refreshAccountQuota: (force?: boolean, adapterId?: string) => Promise<void>;
+  refreshAllAccountQuotas: (force?: boolean) => Promise<void>;
   refreshModels: (force?: boolean, adapterId?: string) => Promise<void>;
 
   hydrateSession: (tabSessionId: string, messages: ChatMessage[], metrics?: SessionMetrics | null) => void;
@@ -158,6 +160,7 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
   accountQuota: null,
   accountQuotaByAdapter: {},
   loadingQuota: false,
+  loadingQuotaByAdapter: {},
   adapterAvailable: true,
   availableAdapters: [],
   availableModels: FALLBACK_AGY_MODELS,
@@ -189,7 +192,16 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     set((prev) => {
       const hasBuckets = snap.buckets.length > 0;
       const existing = prev.accountQuotaByAdapter[id];
-      if (!hasBuckets && existing && existing.buckets.length > 0) return prev;
+      if (!hasBuckets && existing && existing.buckets.length > 0) {
+        // Preserve existing buckets while recording latest error if any
+        if (!snap.error) return prev;
+        return {
+          accountQuotaByAdapter: {
+            ...prev.accountQuotaByAdapter,
+            [id]: { ...existing, error: snap.error },
+          },
+        };
+      }
       return {
         accountQuotaByAdapter: { ...prev.accountQuotaByAdapter, [id]: { ...snap, adapterId: id } },
         ...(id === 'agent-agy' && hasBuckets ? { accountQuota: snap } : {}),
@@ -200,17 +212,44 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
   refreshAccountQuota: async (force = false, adapterId = 'agent-agy') => {
     const cbs = get().callbacks;
     if (!cbs) return;
-    set({ loadingQuota: true });
+    set((prev) => {
+      const next = { ...prev.loadingQuotaByAdapter, [adapterId]: true };
+      return { loadingQuotaByAdapter: next, loadingQuota: true };
+    });
     try {
       const snap = await cbs.invokeRpc<AccountQuotaSnapshot>(agentRpc(adapterId, 'quota.get'), { force });
       if (snap) {
         get().setAccountQuota(snap, adapterId);
       }
-    } catch {
-      // adapter may be disabled
+    } catch (err) {
+      const existing = get().accountQuotaByAdapter[adapterId];
+      if (!existing || existing.buckets.length === 0) {
+        get().setAccountQuota(
+          {
+            adapterId,
+            buckets: [],
+            updatedAt: null,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          adapterId
+        );
+      }
     } finally {
-      set({ loadingQuota: false });
+      set((prev) => {
+        const next = { ...prev.loadingQuotaByAdapter, [adapterId]: false };
+        return {
+          loadingQuotaByAdapter: next,
+          loadingQuota: Object.values(next).some(Boolean),
+        };
+      });
     }
+  },
+
+  refreshAllAccountQuotas: async (force = false) => {
+    const adapters = get().availableAdapters;
+    const ids =
+      adapters.length > 0 ? adapters.map((a) => a.id) : ['agent-agy', 'agent-claude', 'agent-codex'];
+    await Promise.allSettled(ids.map((id) => get().refreshAccountQuota(force, id)));
   },
 
   refreshModels: async (force = false, adapterId = 'agent-agy') => {
