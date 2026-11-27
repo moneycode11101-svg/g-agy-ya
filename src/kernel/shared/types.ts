@@ -15,6 +15,7 @@ export const BUILTIN_PLUGIN_IDS = {
   PANE_TERMINAL: 'pane-terminal',
   PANE_WEBVIEW: 'pane-webview',
   PANE_GIT_DIFF: 'pane-git-diff',
+  PANE_ARTIFACT: 'pane-artifact',
   PANE_LAUNCHER: 'pane-launcher',
   HUD_TOKEN_BAR: 'hud-token-bar',
   SIDEBAR_WORKSPACE: 'sidebar-workspace',

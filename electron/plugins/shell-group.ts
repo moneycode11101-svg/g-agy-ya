@@ -5,6 +5,7 @@ import { themeAppearanceManifest } from '../../src/plugins/theme-appearance/mani
 import { appUpdaterHostPackage } from './app-updater';
 import { macosSystemShellHostPackage } from './macos-system-shell';
 import { notifyFeedbackHostPackage } from './notify-feedback';
+import { paneArtifactHostPackage } from './pane-artifact';
 import { paneGitDiffHostPackage } from './pane-git-diff';
 import { paneTerminalHostPackage } from './pane-terminal';
 import { paneWebviewHostPackage } from './pane-webview';
@@ -18,6 +19,7 @@ export const SHELL_HOST_PLUGINS: readonly BuiltinPluginPackage[] = [
   paneWebviewHostPackage,
   paneTerminalHostPackage,
   paneGitDiffHostPackage,
+  paneArtifactHostPackage,
   { manifest: paneLauncherManifest },
   { manifest: themeAppearanceManifest },
   notifyFeedbackHostPackage,

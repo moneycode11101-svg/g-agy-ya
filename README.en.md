@@ -88,7 +88,7 @@ No need to jump out to Finder every time your agent generates an image, or open 
 </p>
 
 - **Inline Chat Images**: Renders local (`/abs/path`, `~/...`, `file://`, workspace-relative) and remote raster images directly inside assistant bubbles via an image-only Electron protocol (non-image files, SVGs, and XSS payloads stay strictly blocked).
-- **Fullscreen Lightbox & Local File Links**: Click any inline image or image link to zoom in with **Reveal in Finder** and `Esc` to close; click non-image `file://` links (like Markdown artifacts) to open them in your default app.
+- **Right-Side Artifact & File Viewer (`pane-artifact`)**: Clicking `.md` artifacts or local code/text links (`file://`, including `#L10-L25` line ranges) opens them right inside an **in-app right-hand split pane** instead of jumping to an external app—with rendered Markdown & inline images, Preview/Source toggle, live file-change auto-reload, and one-click Finder / External App buttons.
 - **History & ACP Image Restoration**: Reopening past transcripts restores user-uploaded media and direct ACP image chunks seamlessly.
 - **One-Click In-App Updates (`app-updater`)**: Quietly checks GitHub for new patches, surfaces an **Update** badge in the top bar, and handles `git pull`, rebuild, and app relaunch in one click.
 
@@ -96,7 +96,8 @@ No need to jump out to Finder every time your agent generates an image, or open 
 
 ## What's New (`v0.1.1+`)
 
-- **Inline Chat Image Viewer & Lightbox** — local/remote markdown image rendering, fullscreen lightbox with Finder reveal, clickable `file://` links, and transcript/ACP image restoration
+- **In-App Right-Side Artifact & File Viewer (`pane-artifact`)** — opens `.md` artifacts & local code links directly in a split pane with Markdown preview/source toggle, live auto-reload, and `#L10-L25` line highlights
+- **Inline Chat Image Viewer & Lightbox** — local/remote markdown image rendering, fullscreen lightbox with Finder reveal, and transcript/ACP image restoration
 - **One-Click In-App Updater (`app-updater`)** — automatic GitHub patch detection and one-click pull/build/relaunch
 - **Bundled Default Plugins (`Korean Pack` · `Token Band`)** — auto-seeded on first run (`npm run install:plugins` to reinstall anytime)
 - **Unified `제제이야` App Branding** — window title, OS notifications, tray tooltip, and macOS bundle metadata

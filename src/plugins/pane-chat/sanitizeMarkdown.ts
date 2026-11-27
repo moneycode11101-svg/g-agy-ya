@@ -112,7 +112,16 @@ function joinPosix(base: string, rel: string): string {
   return `/${stack.join('/')}`;
 }
 
-function sanitizeHref(raw: string): { href: string; localFile?: string } | null {
+function extractLineAnchor(raw: string): string | undefined {
+  const hashIdx = raw.indexOf('#');
+  if (hashIdx < 0) return undefined;
+  const frag = raw.slice(hashIdx + 1).trim();
+  const m = frag.match(/^L?(\d+)(?:-L?(\d+))?$/i);
+  if (!m) return undefined;
+  return m[2] ? `${m[1]}-${m[2]}` : m[1];
+}
+
+function sanitizeHref(raw: string, baseCwd?: string): { href: string; localFile?: string; localLines?: string } | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   // Reject control characters / protocol-relative URLs
@@ -121,14 +130,26 @@ function sanitizeHref(raw: string): { href: string; localFile?: string } | null 
   if (/^file:/i.test(trimmed)) {
     const localFile = decodeFileUrlToPath(trimmed);
     if (!localFile) return null;
-    return { href: '#local-file', localFile };
+    return { href: '#local-file', localFile, localLines: extractLineAnchor(trimmed) };
   }
 
-  // Bare local absolute path links (e.g. `[image](/Users/.../a.png)` or `[doc](~/notes.md)`)
+  // Bare local absolute path links (e.g. `[image](/Users/.../a.png)` or `[doc](~/notes.md#L10-L20)`)
   if (trimmed.startsWith('/') || trimmed.startsWith('~/') || /^[A-Za-z]:[\\/]/.test(trimmed)) {
     const localFile = safeDecodePath(trimmed.split(/[?#]/)[0]);
     if (!localFile) return null;
-    return { href: '#local-file', localFile };
+    return { href: '#local-file', localFile, localLines: extractLineAnchor(trimmed) };
+  }
+
+  // Relative local file links resolved against workspace/artifact base directory
+  if (baseCwd && !trimmed.startsWith('#') && !/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    const cleanRel = safeDecodePath(trimmed.split(/[?#]/)[0]);
+    if (cleanRel) {
+      return {
+        href: '#local-file',
+        localFile: joinPosix(baseCwd, cleanRel),
+        localLines: extractLineAnchor(trimmed),
+      };
+    }
   }
 
   try {
@@ -263,12 +284,15 @@ function sanitizeNode(node: Node, doc: Document, baseCwd?: string): Node | null 
 
   // Strict per-tag attribute allowlist (all `on*`, `style`, `srcdoc`, `data-*`, etc. are dropped)
   if (tag === 'a') {
-    const safeLink = sanitizeHref(el.getAttribute('href') || '');
+    const safeLink = sanitizeHref(el.getAttribute('href') || '', baseCwd);
     if (safeLink) {
       clean.setAttribute('href', safeLink.href);
       clean.setAttribute('rel', 'noopener noreferrer');
       if (safeLink.localFile) {
         clean.setAttribute('data-local-file', safeLink.localFile);
+      }
+      if (safeLink.localLines) {
+        clean.setAttribute('data-local-lines', safeLink.localLines);
       }
     }
     const title = el.getAttribute('title');

@@ -2,6 +2,7 @@ import type { BuiltinPluginPackage } from '../kernel/client';
 import { appUpdaterClientPackage } from './app-updater';
 import { macosSystemShellClientPackage } from './macos-system-shell';
 import { notifyFeedbackClientPackage } from './notify-feedback';
+import { paneArtifactClientPackage } from './pane-artifact';
 import { paneGitDiffClientPackage } from './pane-git-diff';
 import { paneLauncherClientPackage } from './pane-launcher';
 import { paneTerminalClientPackage } from './pane-terminal';
@@ -16,6 +17,7 @@ export const SHELL_CLIENT_PLUGINS: readonly BuiltinPluginPackage[] = [
   paneWebviewClientPackage,
   paneTerminalClientPackage,
   paneGitDiffClientPackage,
+  paneArtifactClientPackage,
   paneLauncherClientPackage,
   themeAppearanceClientPackage,
   notifyFeedbackClientPackage,

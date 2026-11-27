@@ -25,6 +25,7 @@ import type { ChatBlock, ChatMessage, ChatStepItem, ToolCallItem } from '../../s
 import { fmtAgo } from '../../utils/formatKo';
 import { isRenderableLocalImagePath, renderSanitizedMarkdown } from './sanitizeMarkdown';
 import { MessageAttachmentGrid } from './AttachmentThumbnail';
+import { isArtifactPreviewablePath, openLocalArtifactInPane, parseLineRange } from '../pane-artifact/openArtifact';
 
 function formatElapsedKo(ms: number): string {
   const sec = Math.max(1, Math.round(ms / 1000));
@@ -252,7 +253,7 @@ const StepsChecklistView: React.FC<{ items: ChatStepItem[] }> = ({ items }) => {
   );
 };
 
-const InlineImageLightbox: React.FC<{
+export const InlineImageLightbox: React.FC<{
   src: string;
   alt?: string;
   localPath?: string;
@@ -332,12 +333,14 @@ export interface AssistantTurnViewProps {
   message: ChatMessage;
   transcriptView: 'normal' | 'thinking' | 'detailed';
   cwd?: string;
+  groupId?: string;
 }
 
 export const AssistantTurnView: React.FC<AssistantTurnViewProps> = ({
   message,
   transcriptView,
   cwd,
+  groupId,
 }) => {
   const blocks = useMemo(() => normalizeMessageBlocks(message), [message]);
   const [workExpanded, setWorkExpanded] = useState(transcriptView !== 'normal');
@@ -417,6 +420,16 @@ export const AssistantTurnView: React.FC<AssistantTurnViewProps> = ({
           alt: link.textContent || undefined,
           localPath: localFile,
         });
+      } else if (isArtifactPreviewablePath(localFile)) {
+        const range = parseLineRange(link.getAttribute('data-local-lines'));
+        const opened = openLocalArtifactInPane({
+          filePath: localFile,
+          sourceGroupId: groupId,
+          ...range,
+        });
+        if (!opened) {
+          void getDeskKernelBridge()?.rpc.invoke('kernel:shell:open-path', { targetPath: localFile });
+        }
       } else {
         void getDeskKernelBridge()?.rpc.invoke('kernel:shell:open-path', { targetPath: localFile });
       }
