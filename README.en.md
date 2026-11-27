@@ -76,8 +76,30 @@ No more `⌘Tab` ping-pong between your AI chat, browser preview, and terminal.
 - **Split endlessly** horizontally (`⌘D`) or vertically (`⌘⇧D`).
 - **Drag any tab to any edge** to dock and rearrange panes on the fly.
 - **Built-in Browser (`⌘T`) & Terminal (`⌘⇧T`)**: Keep `localhost`, docs, GitHub, and a live shell right next to your agent.
-- **Inline Chat Images & Lightbox**: Local and remote markdown images render directly inside chat bubbles—click any image (or image link) for a fullscreen lightbox with Finder reveal, or click local `file://` links to open them right away.
-- **One-Click In-App Updates**: Automatically checks GitHub for new patches, surfaces an **Update** badge in the top bar, and handles `git pull`, rebuild, and relaunch in one click.
+
+---
+
+### 4. Inline Chat Images, Lightbox & One-Click Updates
+
+No need to jump out to Finder every time your agent generates an image, or open a terminal to `git pull` every time a new patch lands.
+
+<p align="center">
+  <img src="docs/demos/chat-image-lightbox.gif" alt="Inline local image rendering inside chat bubble and fullscreen lightbox preview with Finder reveal" width="100%" />
+</p>
+
+- **Inline Chat Images**: Renders local (`/abs/path`, `~/...`, `file://`, workspace-relative) and remote raster images directly inside assistant bubbles via an image-only Electron protocol (non-image files, SVGs, and XSS payloads stay strictly blocked).
+- **Fullscreen Lightbox & Local File Links**: Click any inline image or image link to zoom in with **Reveal in Finder** and `Esc` to close; click non-image `file://` links (like Markdown artifacts) to open them in your default app.
+- **History & ACP Image Restoration**: Reopening past transcripts restores user-uploaded media and direct ACP image chunks seamlessly.
+- **One-Click In-App Updates (`app-updater`)**: Quietly checks GitHub for new patches, surfaces an **Update** badge in the top bar, and handles `git pull`, rebuild, and app relaunch in one click.
+
+---
+
+## What's New (`v0.1.1+`)
+
+- **Inline Chat Image Viewer & Lightbox** — local/remote markdown image rendering, fullscreen lightbox with Finder reveal, clickable `file://` links, and transcript/ACP image restoration
+- **One-Click In-App Updater (`app-updater`)** — automatic GitHub patch detection and one-click pull/build/relaunch
+- **Bundled Default Plugins (`Korean Pack` · `Token Band`)** — auto-seeded on first run (`npm run install:plugins` to reinstall anytime)
+- **Unified `제제이야` App Branding** — window title, OS notifications, tray tooltip, and macOS bundle metadata
 
 ---
 
