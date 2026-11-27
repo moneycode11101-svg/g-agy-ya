@@ -613,6 +613,7 @@ export function listRecentSessions(limit = 40): SessionSummary[] {
             title: o.title || o.conversationId.slice(0, 8),
             projectId: o.cwd || 'agy-desk',
             projectLabel,
+            cwd: o.cwd || undefined,
             updatedAt: Math.max(o.updatedAt || 0, fileMtime) || Date.now(),
             currentContext: tail.currentContext,
             model: tail.model,

@@ -132,19 +132,32 @@ export const SidebarWorkspaceView: React.FC<SidebarWorkspaceViewProps> = ({ ctx 
   const activeConvId = activeChatState?.externalSessionId ?? activeChatState?.agyConversationId ?? null;
 
   const { projectGroups, standaloneSessions } = useMemo(() => {
-    const byProject = new Map<string, { label: string; folderPath?: string; items: SessionSummary[] }>();
+    const byProject = new Map<
+      string,
+      { label: string; pinnedFolderPath?: string; resolvedCwd?: string; items: SessionSummary[] }
+    >();
     const standalone: SessionSummary[] = [];
 
     for (const dir of projectFolders) {
       const label = dir.split('/').filter(Boolean).pop() || dir;
       if (!byProject.has(label)) {
-        byProject.set(label, { label, folderPath: dir, items: [] });
+        byProject.set(label, { label, pinnedFolderPath: dir, resolvedCwd: dir, items: [] });
       }
     }
 
     for (const s of recentSessions) {
       if (s.projectLabel) {
-        const entry = byProject.get(s.projectLabel) || { label: s.projectLabel, items: [] };
+        const inferredCwd =
+          (s.cwd && s.cwd.startsWith('/') ? s.cwd : undefined) ||
+          (s.projectId && s.projectId.startsWith('/') ? s.projectId : undefined);
+        const entry = byProject.get(s.projectLabel) || {
+          label: s.projectLabel,
+          resolvedCwd: inferredCwd,
+          items: [],
+        };
+        if (!entry.resolvedCwd && inferredCwd) {
+          entry.resolvedCwd = inferredCwd;
+        }
         entry.items.push(s);
         byProject.set(s.projectLabel, entry);
       } else {
@@ -326,71 +339,98 @@ export const SidebarWorkspaceView: React.FC<SidebarWorkspaceViewProps> = ({ ctx 
           </button>
         ) : (
           <div className="space-y-1">
-            {projectGroups.map((pg) => (
-              <div key={pg.label} className="space-y-0.5">
-                <div
-                  onContextMenu={(e) => {
-                    if (!pg.folderPath) return;
-                    e.preventDefault();
-                    const dir = pg.folderPath;
-                    ctx.ui.showContextMenu(e.clientX, e.clientY, [
-                      {
-                        type: 'item',
-                        label: `${pg.label}에서 새 대화`,
-                        icon: <MessageSquare size={13} />,
-                        onSelect: () => ctx.workspace.openTab('chat', { cwd: dir }),
-                      },
-                      {
-                        type: 'item',
-                        label: 'Finder에서 열기',
-                        icon: <FolderOpen size={13} />,
-                        onSelect: () => void ctx.rpc.invoke('sidebar-workspace:showInFolder', { targetPath: dir }),
-                      },
-                      { type: 'separator' },
-                      {
-                        type: 'item',
-                        label: '프로젝트 목록에서 제거',
-                        icon: <Trash2 size={13} />,
-                        danger: true,
-                        onSelect: () => void handleRemoveProjectFolder(dir),
-                      },
-                    ]);
-                  }}
-                  className="group flex items-center justify-between gap-1 px-2.5 py-1 text-[12.5px] font-medium rounded-lg hover:bg-[var(--surface-active)]"
-                  style={{ color: 'var(--fg-soft)' }}
-                >
-                  <span className="flex items-center gap-2 min-w-0">
-                    <Folder size={13} style={{ color: 'var(--muted)' }} className="shrink-0" />
-                    <span className="truncate" title={pg.folderPath || pg.label}>
-                      {pg.label}
+            {projectGroups.map((pg) => {
+              const targetCwd = pg.resolvedCwd;
+              const openNewChatInProject = (split?: SplitDir) => {
+                const init = targetCwd ? { cwd: targetCwd } : undefined;
+                ctx.workspace.openTab('chat', init, split ? { split } : undefined);
+              };
+              return (
+                <div key={pg.label} className="space-y-0.5">
+                  <div
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      ctx.ui.showContextMenu(e.clientX, e.clientY, [
+                        {
+                          type: 'item',
+                          label: `${pg.label}에서 새 대화`,
+                          icon: <MessageSquare size={13} />,
+                          onSelect: () => openNewChatInProject(),
+                        },
+                        {
+                          type: 'item',
+                          label: '오른쪽 분할로 새 대화',
+                          icon: <Columns2 size={13} />,
+                          onSelect: () => openNewChatInProject('h'),
+                        },
+                        ...(targetCwd
+                          ? [
+                              {
+                                type: 'item' as const,
+                                label: 'Finder에서 열기',
+                                icon: <FolderOpen size={13} />,
+                                onSelect: () =>
+                                  void ctx.rpc.invoke('sidebar-workspace:showInFolder', { targetPath: targetCwd }),
+                              },
+                            ]
+                          : []),
+                        ...(pg.pinnedFolderPath
+                          ? [
+                              { type: 'separator' as const },
+                              {
+                                type: 'item' as const,
+                                label: '프로젝트 목록에서 제거',
+                                icon: <Trash2 size={13} />,
+                                danger: true,
+                                onSelect: () => void handleRemoveProjectFolder(pg.pinnedFolderPath!),
+                              },
+                            ]
+                          : []),
+                      ]);
+                    }}
+                    className="group flex items-center justify-between gap-1 px-2.5 py-1 text-[12.5px] font-medium rounded-lg hover:bg-[var(--surface-active)]"
+                    style={{ color: 'var(--fg-soft)' }}
+                  >
+                    <span className="flex items-center gap-2 min-w-0">
+                      <Folder size={13} style={{ color: 'var(--muted)' }} className="shrink-0" />
+                      <span className="truncate" title={targetCwd || pg.label}>
+                        {pg.label}
+                      </span>
                     </span>
-                  </span>
-                  {pg.folderPath && (
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      {pg.pinnedFolderPath && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleRemoveProjectFolder(pg.pinnedFolderPath!);
+                          }}
+                          className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--card)] cursor-pointer transition-opacity"
+                          style={{ color: 'var(--muted)' }}
+                          title="프로젝트 폴더 제거"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => ctx.workspace.openTab('chat', { cwd: pg.folderPath })}
-                        className="p-0.5 rounded hover:bg-[var(--card)] cursor-pointer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openNewChatInProject();
+                        }}
+                        className="p-0.5 rounded opacity-60 group-hover:opacity-100 hover:bg-[var(--card)] cursor-pointer transition-opacity"
                         style={{ color: 'var(--muted)' }}
                         title={`${pg.label}에서 새 대화`}
+                        aria-label={`${pg.label}에서 새 대화`}
                       >
-                        <Plus size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleRemoveProjectFolder(pg.folderPath!)}
-                        className="p-0.5 rounded hover:bg-[var(--card)] cursor-pointer"
-                        style={{ color: 'var(--muted)' }}
-                        title="프로젝트 폴더 제거"
-                      >
-                        <Trash2 size={11} />
+                        <Plus size={13} />
                       </button>
                     </div>
-                  )}
+                  </div>
+                  {pg.items.length > 0 && <div className="pl-1 space-y-0.5">{pg.items.map(renderSessionRow)}</div>}
                 </div>
-                {pg.items.length > 0 && <div className="pl-1 space-y-0.5">{pg.items.map(renderSessionRow)}</div>}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
