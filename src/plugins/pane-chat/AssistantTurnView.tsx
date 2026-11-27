@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   Check,
@@ -8,6 +9,7 @@ import {
   Circle,
   Copy,
   FileText,
+  FolderOpen,
   Loader2,
   MinusCircle,
   Pencil,
@@ -15,11 +17,13 @@ import {
   Sparkles,
   Terminal,
   Wrench,
+  X,
   XCircle,
 } from 'lucide-react';
+import { getDeskKernelBridge } from '../../kernel/client';
 import type { ChatBlock, ChatMessage, ChatStepItem, ToolCallItem } from '../../shared/types';
 import { fmtAgo } from '../../utils/formatKo';
-import { renderSanitizedMarkdown } from './sanitizeMarkdown';
+import { isRenderableLocalImagePath, renderSanitizedMarkdown } from './sanitizeMarkdown';
 import { MessageAttachmentGrid } from './AttachmentThumbnail';
 
 function formatElapsedKo(ms: number): string {
@@ -248,19 +252,98 @@ const StepsChecklistView: React.FC<{ items: ChatStepItem[] }> = ({ items }) => {
   );
 };
 
+const InlineImageLightbox: React.FC<{
+  src: string;
+  alt?: string;
+  localPath?: string;
+  onClose: () => void;
+}> = ({ src, alt, localPath, onClose }) => {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const fileName = localPath ? localPath.split('/').pop() || localPath : alt || '이미지 미리보기';
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center p-6"
+      style={{ background: 'rgba(0, 0, 0, 0.76)', backdropFilter: 'blur(4px)' }}
+      onClick={onClose}
+    >
+      <div
+        className="relative max-w-[90vw] max-h-[88vh] flex flex-col items-center gap-2.5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute -top-3 -right-3 w-7 h-7 rounded-full flex items-center justify-center cursor-pointer transition-transform hover:scale-105"
+          style={{
+            background: 'var(--card)',
+            color: 'var(--fg)',
+            border: '1px solid var(--border-strong)',
+            boxShadow: 'var(--shadow-popover)',
+          }}
+          title="닫기 (Esc)"
+          aria-label="이미지 미리보기 닫기"
+        >
+          <X size={14} />
+        </button>
+        <img
+          src={src}
+          alt={alt || fileName}
+          className="max-w-[88vw] max-h-[78vh] rounded-xl object-contain"
+          style={{ background: 'var(--card)', boxShadow: '0 20px 60px rgba(0, 0, 0, 0.45)' }}
+        />
+        <div
+          className="px-3 py-1.5 rounded-full text-[11.5px] flex items-center gap-2.5 max-w-[84vw]"
+          style={{ background: 'rgba(18, 20, 24, 0.86)', color: '#f4f4f5' }}
+        >
+          <span className="truncate font-mono">{fileName}</span>
+          {localPath && (
+            <button
+              type="button"
+              onClick={() => {
+                void getDeskKernelBridge()?.rpc.invoke('kernel:shell:show-in-finder', { targetPath: localPath });
+              }}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] cursor-pointer hover:bg-white/15 shrink-0"
+              style={{ color: '#93c5fd' }}
+              title={localPath}
+            >
+              <FolderOpen size={11} />
+              <span>Finder</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
 export interface AssistantTurnViewProps {
   message: ChatMessage;
   transcriptView: 'normal' | 'thinking' | 'detailed';
+  cwd?: string;
 }
 
 export const AssistantTurnView: React.FC<AssistantTurnViewProps> = ({
   message,
   transcriptView,
+  cwd,
 }) => {
   const blocks = useMemo(() => normalizeMessageBlocks(message), [message]);
   const [workExpanded, setWorkExpanded] = useState(transcriptView !== 'normal');
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [lightbox, setLightbox] = useState<{ src: string; alt?: string; localPath?: string } | null>(null);
 
   useEffect(() => {
     setWorkExpanded(transcriptView !== 'normal');
@@ -298,9 +381,55 @@ export const AssistantTurnView: React.FC<AssistantTurnViewProps> = ({
   }, [blocks]);
 
   const finalHtml = useMemo(
-    () => (finalTextBlock ? renderSanitizedMarkdown(finalTextBlock.text) : ''),
-    [finalTextBlock]
+    () => (finalTextBlock ? renderSanitizedMarkdown(finalTextBlock.text, cwd) : ''),
+    [finalTextBlock, cwd]
   );
+
+  const handleProseClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+
+    const img = target.closest('img.md-chat-img') as HTMLImageElement | null;
+    if (img) {
+      e.preventDefault();
+      e.stopPropagation();
+      const src = img.getAttribute('src');
+      if (src) {
+        setLightbox({
+          src,
+          alt: img.getAttribute('alt') || undefined,
+          localPath: img.getAttribute('data-local-path') || undefined,
+        });
+      }
+      return;
+    }
+
+    const link = target.closest('a') as HTMLAnchorElement | null;
+    if (!link) return;
+
+    const localFile = link.getAttribute('data-local-file');
+    if (localFile) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (isRenderableLocalImagePath(localFile)) {
+        setLightbox({
+          src: `desk-app://local-media?path=${encodeURIComponent(localFile)}`,
+          alt: link.textContent || undefined,
+          localPath: localFile,
+        });
+      } else {
+        void getDeskKernelBridge()?.rpc.invoke('kernel:shell:open-path', { targetPath: localFile });
+      }
+      return;
+    }
+
+    const href = link.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(href)) {
+      e.preventDefault();
+      e.stopPropagation();
+      void getDeskKernelBridge()?.rpc.invoke('kernel:shell:open-external', { url: href });
+    }
+  };
 
   const toolCount = useMemo(
     () => workBlocks.filter((b) => b.type === 'tool').length,
@@ -377,7 +506,8 @@ export const AssistantTurnView: React.FC<AssistantTurnViewProps> = ({
           </div>
           <div
             className="md-prose text-[12.5px] leading-relaxed"
-            dangerouslySetInnerHTML={{ __html: renderSanitizedMarkdown(block.text) }}
+            onClick={handleProseClick}
+            dangerouslySetInnerHTML={{ __html: renderSanitizedMarkdown(block.text, cwd) }}
           />
         </div>
       );
@@ -388,7 +518,8 @@ export const AssistantTurnView: React.FC<AssistantTurnViewProps> = ({
         key={block.id || idx}
         className="md-prose text-[13px] leading-relaxed opacity-85"
         style={{ color: 'var(--fg-soft)' }}
-        dangerouslySetInnerHTML={{ __html: renderSanitizedMarkdown(block.text) }}
+        onClick={handleProseClick}
+        dangerouslySetInnerHTML={{ __html: renderSanitizedMarkdown(block.text, cwd) }}
       />
     );
   };
@@ -446,7 +577,17 @@ export const AssistantTurnView: React.FC<AssistantTurnViewProps> = ({
       {finalTextBlock && (
         <div
           className="md-prose break-words"
+          onClick={handleProseClick}
           dangerouslySetInnerHTML={{ __html: finalHtml }}
+        />
+      )}
+
+      {lightbox && (
+        <InlineImageLightbox
+          src={lightbox.src}
+          alt={lightbox.alt}
+          localPath={lightbox.localPath}
+          onClose={() => setLightbox(null)}
         />
       )}
 

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { protocol } from 'electron';
@@ -114,6 +115,61 @@ const RESERVED_JS_WORDS = new Set([
   'yield',
   'await',
 ]);
+
+const LOCAL_IMAGE_MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.avif': 'image/avif',
+  '.ico': 'image/x-icon',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
+};
+
+const MAX_LOCAL_IMAGE_BYTES = 50 * 1024 * 1024;
+
+function serveLocalImageRequest(urlObj: URL, corsHeaders: Record<string, string>): Response {
+  const rawPath = urlObj.searchParams.get('path') || '';
+  const trimmed = rawPath.trim();
+  if (!trimmed || trimmed.includes('\0')) {
+    return new Response('Invalid image path', { status: 400, headers: corsHeaders });
+  }
+  const expanded = trimmed.startsWith('~/')
+    ? path.join(os.homedir(), trimmed.slice(2))
+    : trimmed;
+  if (!path.isAbsolute(expanded)) {
+    return new Response('Absolute path required', { status: 400, headers: corsHeaders });
+  }
+  const resolved = path.resolve(expanded);
+  const ext = path.extname(resolved).toLowerCase();
+  const mime = LOCAL_IMAGE_MIME_BY_EXT[ext];
+  if (!mime) {
+    return new Response('Unsupported media type', { status: 403, headers: corsHeaders });
+  }
+  try {
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) {
+      return new Response('Not a file', { status: 404, headers: corsHeaders });
+    }
+    if (stat.size > MAX_LOCAL_IMAGE_BYTES) {
+      return new Response('Image too large', { status: 413, headers: corsHeaders });
+    }
+    const bytes = fs.readFileSync(resolved);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        'Content-Type': mime,
+        'Cache-Control': 'private, max-age=60',
+      },
+    });
+  } catch {
+    return new Response('Not found', { status: 404, headers: corsHeaders });
+  }
+}
 
 const MIME_BY_EXT: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -623,27 +679,35 @@ export class LocalPluginCompiler {
       }
     });
 
-    // Optional production app origin (`desk-app://app/index.html`) to avoid `file://` opaque origin CORS issues
-    if (opts?.appDistDir) {
-      const distRealRoot = fs.existsSync(opts.appDistDir) ? fs.realpathSync(opts.appDistDir) : opts.appDistDir;
-      protocol.handle(DESK_APP_SCHEME, (request) => {
-        try {
-          const u = new URL(request.url);
-          const relPath = decodeURIComponent(u.pathname).replace(/^\/+/, '') || 'index.html';
-          const safePath = isInsideRoot(distRealRoot, path.resolve(distRealRoot, relPath));
-          if (!safePath || !fs.existsSync(safePath) || !fs.statSync(safePath).isFile()) {
-            return new Response('Not found', { status: 404 });
-          }
-          const ext = path.extname(safePath).toLowerCase();
-          return new Response(fs.readFileSync(safePath), {
-            status: 200,
-            headers: { 'Content-Type': MIME_BY_EXT[ext] || 'application/octet-stream' },
-          });
-        } catch (err) {
-          return new Response(`App asset error: ${String(err)}`, { status: 500 });
+    // App origin (`desk-app://app/...`) + safe local image streaming (`desk-app://local-media?path=...`)
+    const distRealRoot =
+      opts?.appDistDir && fs.existsSync(opts.appDistDir)
+        ? fs.realpathSync(opts.appDistDir)
+        : opts?.appDistDir || null;
+
+    protocol.handle(DESK_APP_SCHEME, (request) => {
+      try {
+        const u = new URL(request.url);
+        if (u.hostname === 'local-media') {
+          return serveLocalImageRequest(u, corsHeaders);
         }
-      });
-    }
+        if (!distRealRoot) {
+          return new Response('Not found', { status: 404 });
+        }
+        const relPath = decodeURIComponent(u.pathname).replace(/^\/+/, '') || 'index.html';
+        const safePath = isInsideRoot(distRealRoot, path.resolve(distRealRoot, relPath));
+        if (!safePath || !fs.existsSync(safePath) || !fs.statSync(safePath).isFile()) {
+          return new Response('Not found', { status: 404 });
+        }
+        const ext = path.extname(safePath).toLowerCase();
+        return new Response(fs.readFileSync(safePath), {
+          status: 200,
+          headers: { 'Content-Type': MIME_BY_EXT[ext] || 'application/octet-stream' },
+        });
+      } catch (err) {
+        return new Response(`App asset error: ${String(err)}`, { status: 500 });
+      }
+    });
   }
 
   private buildHostProxyModule(pkg: string): string {

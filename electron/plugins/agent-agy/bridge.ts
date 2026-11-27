@@ -1193,6 +1193,17 @@ export class AgyPluginBridge {
       const text = typeof content?.text === 'string' ? content.text : '';
       if (text) {
         this.emit({ type: 'text_delta', tabSessionId, delta: text });
+        return;
+      }
+      if (content?.type === 'image') {
+        const uri = typeof content.uri === 'string' ? content.uri.trim() : '';
+        const data = typeof content.data === 'string' ? content.data.trim() : '';
+        const mimeType = typeof content.mimeType === 'string' ? content.mimeType.trim() : '';
+        if (uri) {
+          this.emit({ type: 'text_delta', tabSessionId, delta: `\n\n![image](${uri})\n\n` });
+        } else if (data && /^image\/(png|jpeg|jpg|webp|gif|avif|bmp)$/i.test(mimeType)) {
+          this.emit({ type: 'text_delta', tabSessionId, delta: `\n\n![image](data:${mimeType};base64,${data})\n\n` });
+        }
       }
       return;
     }

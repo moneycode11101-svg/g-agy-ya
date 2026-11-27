@@ -981,6 +981,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                   key={m.id}
                   message={m}
                   transcriptView={cfg.transcriptView || 'normal'}
+                  cwd={state.cwd}
                 />
               )
             )

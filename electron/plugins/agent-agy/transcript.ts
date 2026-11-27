@@ -36,6 +36,7 @@ interface RawStep {
   cache_read_tokens?: number;
   output_tokens?: number;
   tool_calls?: Array<{ id?: string; name?: string; args?: Record<string, unknown> }>;
+  media?: Array<{ mime_type?: string; uri?: string }>;
 }
 
 export function formatProjectLabel(projectId: string): string {
@@ -394,19 +395,37 @@ export function loadTranscriptMessages(conversationId: string): ChatMessage[] {
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
     const ts = s.created_at ? Date.parse(s.created_at) : Date.now();
-    if (s.type === 'USER_INPUT' && s.content) {
-      const text = s.content
+    if (s.type === 'USER_INPUT' && (s.content || (Array.isArray(s.media) && s.media.length > 0))) {
+      const text = (s.content || '')
         .replace(/<USER_REQUEST>\s*/gi, '')
         .replace(/\s*<\/USER_REQUEST>/gi, '')
         .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '')
         .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/gi, '')
         .replace(/<SYSTEM_MESSAGE>[\s\S]*?<\/SYSTEM_MESSAGE>/gi, '')
         .trim();
-      if (!text) continue;
+      const images: string[] = [];
+      if (Array.isArray(s.media)) {
+        for (const m of s.media) {
+          const rawUri = typeof m?.uri === 'string' ? m.uri.trim() : '';
+          if (!rawUri) continue;
+          if (/^file:/i.test(rawUri)) {
+            try {
+              const p = decodeURIComponent(new URL(rawUri).pathname);
+              if (p) images.push(p);
+            } catch {
+              // skip malformed URI
+            }
+          } else if (path.isAbsolute(rawUri)) {
+            images.push(rawUri);
+          }
+        }
+      }
+      if (!text && images.length === 0) continue;
       messages.push({
         id: `u-${s.step_index ?? i}`,
         role: 'user',
         text,
+        images: images.length > 0 ? images : undefined,
         createdAt: Number.isNaN(ts) ? Date.now() : ts,
       });
     } else if (s.type === 'PLANNER_RESPONSE') {

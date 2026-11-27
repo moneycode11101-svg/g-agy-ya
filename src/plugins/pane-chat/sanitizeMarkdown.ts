@@ -26,6 +26,7 @@ const ALLOWED_TAGS = new Set([
   'h5',
   'h6',
   'a',
+  'img',
   'table',
   'thead',
   'tbody',
@@ -55,13 +56,26 @@ const DROP_SUBTREE_TAGS = new Set([
   'base',
   'template',
   'noscript',
-  'img',
   'audio',
   'video',
   'source',
 ]);
 
-const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+const ALLOWED_EXTERNAL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+const SAFE_DATA_IMAGE_RE = /^data:image\/(png|jpeg|jpg|webp|gif|avif|bmp);base64,[a-z0-9+/=\s]+$/i;
+const LOCAL_IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|avif|ico|tiff?)$/i;
+
+export function isRenderableLocalImagePath(filePath: string): boolean {
+  return LOCAL_IMAGE_EXT_RE.test(filePath);
+}
+
+function safeDecodePath(rawPath: string): string {
+  try {
+    return decodeURIComponent(rawPath);
+  } catch {
+    return rawPath;
+  }
+}
 
 function escapeHtmlFallback(text: string): string {
   return text
@@ -72,21 +86,129 @@ function escapeHtmlFallback(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function sanitizeHref(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  // Reject control characters / HTML-entity tricks / protocol-relative URLs
-  if (/[\u0000-\u001f\u007f]/.test(trimmed) || trimmed.startsWith('//')) return null;
+function decodeFileUrlToPath(raw: string): string | null {
   try {
-    const parsed = new URL(trimmed);
-    if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) return null;
-    return parsed.href;
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'file:') return null;
+    let p = decodeURIComponent(parsed.pathname);
+    // Strip optional `#L10-L20` line anchors cleanly (pathname excludes hash already)
+    // On Windows file:///C:/foo -> C:/foo
+    if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
+    return p || null;
   } catch {
     return null;
   }
 }
 
-function sanitizeNode(node: Node, doc: Document): Node | null {
+function joinPosix(base: string, rel: string): string {
+  const b = base.replace(/\/+$/, '');
+  const parts = `${b}/${rel}`.split('/');
+  const stack: string[] = [];
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    if (part === '..') stack.pop();
+    else stack.push(part);
+  }
+  return `/${stack.join('/')}`;
+}
+
+function sanitizeHref(raw: string): { href: string; localFile?: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Reject control characters / protocol-relative URLs
+  if (/[\u0000-\u001f\u007f]/.test(trimmed) || trimmed.startsWith('//')) return null;
+
+  if (/^file:/i.test(trimmed)) {
+    const localFile = decodeFileUrlToPath(trimmed);
+    if (!localFile) return null;
+    return { href: '#local-file', localFile };
+  }
+
+  // Bare local absolute path links (e.g. `[image](/Users/.../a.png)` or `[doc](~/notes.md)`)
+  if (trimmed.startsWith('/') || trimmed.startsWith('~/') || /^[A-Za-z]:[\\/]/.test(trimmed)) {
+    const localFile = safeDecodePath(trimmed.split(/[?#]/)[0]);
+    if (!localFile) return null;
+    return { href: '#local-file', localFile };
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (!ALLOWED_EXTERNAL_PROTOCOLS.has(parsed.protocol)) return null;
+    return { href: parsed.href };
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeImageSrc(raw: string, baseCwd?: string): { src: string; localPath?: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed) || trimmed.startsWith('//')) return null;
+
+  // 1) Safe inline raster data URI (SVG intentionally blocked)
+  if (/^data:/i.test(trimmed)) {
+    return SAFE_DATA_IMAGE_RE.test(trimmed) ? { src: trimmed } : null;
+  }
+
+  // 2) Already rewritten local-media URL
+  if (/^desk-app:\/\/local-media\?/i.test(trimmed)) {
+    try {
+      const u = new URL(trimmed);
+      const p = u.searchParams.get('path') || undefined;
+      return { src: trimmed, localPath: p };
+    } catch {
+      return null;
+    }
+  }
+
+  // 3) file:// local path
+  if (/^file:/i.test(trimmed)) {
+    const localPath = decodeFileUrlToPath(trimmed);
+    if (!localPath || !LOCAL_IMAGE_EXT_RE.test(localPath)) return null;
+    return {
+      src: `desk-app://local-media?path=${encodeURIComponent(localPath)}`,
+      localPath,
+    };
+  }
+
+  // 4) Remote http(s) URL
+  if (/^https?:/i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return { src: parsed.href };
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  // 5) Absolute local path (`/Users/...`, `~/...`) or Windows drive path
+  if (trimmed.startsWith('/') || trimmed.startsWith('~/') || /^[A-Za-z]:[\\/]/.test(trimmed)) {
+    const cleanPath = safeDecodePath(trimmed.split(/[?#]/)[0]);
+    if (!LOCAL_IMAGE_EXT_RE.test(cleanPath)) return null;
+    return {
+      src: `desk-app://local-media?path=${encodeURIComponent(cleanPath)}`,
+      localPath: cleanPath,
+    };
+  }
+
+  // 6) Relative path resolved against active workspace cwd
+  if (baseCwd && !/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    const cleanRel = safeDecodePath(trimmed.split(/[?#]/)[0]);
+    if (!LOCAL_IMAGE_EXT_RE.test(cleanRel)) return null;
+    const resolved = joinPosix(baseCwd, cleanRel);
+    return {
+      src: `desk-app://local-media?path=${encodeURIComponent(resolved)}`,
+      localPath: resolved,
+    };
+  }
+
+  return null;
+}
+
+function sanitizeNode(node: Node, doc: Document, baseCwd?: string): Node | null {
   if (node.nodeType === Node.TEXT_NODE) {
     return doc.createTextNode(node.textContent || '');
   }
@@ -118,14 +240,36 @@ function sanitizeNode(node: Node, doc: Document): Node | null {
     return cleanInput;
   }
 
+  // Safe image element (strict attribute allowlist — zero event handlers, zero SVG/javascript)
+  if (tag === 'img') {
+    const safeImg = sanitizeImageSrc(el.getAttribute('src') || '', baseCwd);
+    if (!safeImg) return null;
+    const cleanImg = doc.createElement('img');
+    cleanImg.setAttribute('src', safeImg.src);
+    cleanImg.setAttribute('class', 'md-chat-img');
+    cleanImg.setAttribute('loading', 'lazy');
+    cleanImg.setAttribute('decoding', 'async');
+    const alt = el.getAttribute('alt');
+    if (alt) cleanImg.setAttribute('alt', alt.slice(0, 300));
+    const title = el.getAttribute('title');
+    if (title) cleanImg.setAttribute('title', title.slice(0, 200));
+    if (safeImg.localPath) {
+      cleanImg.setAttribute('data-local-path', safeImg.localPath);
+    }
+    return cleanImg;
+  }
+
   const clean = doc.createElement(tag);
 
   // Strict per-tag attribute allowlist (all `on*`, `style`, `srcdoc`, `data-*`, etc. are dropped)
   if (tag === 'a') {
-    const safeHref = sanitizeHref(el.getAttribute('href') || '');
-    if (safeHref) {
-      clean.setAttribute('href', safeHref);
+    const safeLink = sanitizeHref(el.getAttribute('href') || '');
+    if (safeLink) {
+      clean.setAttribute('href', safeLink.href);
       clean.setAttribute('rel', 'noopener noreferrer');
+      if (safeLink.localFile) {
+        clean.setAttribute('data-local-file', safeLink.localFile);
+      }
     }
     const title = el.getAttribute('title');
     if (title) clean.setAttribute('title', title.slice(0, 200));
@@ -143,17 +287,18 @@ function sanitizeNode(node: Node, doc: Document): Node | null {
   }
 
   for (const child of Array.from(el.childNodes)) {
-    const sanitizedChild = sanitizeNode(child, doc);
+    const sanitizedChild = sanitizeNode(child, doc, baseCwd);
     if (sanitizedChild) clean.appendChild(sanitizedChild);
   }
   return clean;
 }
 
 /**
- * DOM-whitelist Markdown renderer (fixes critic audit #3 XSS vulnerability).
- * Completely immune to `<img/onerror>`, `<svg onload>`, `javascript:` entity bypasses, and nested tag evasion.
+ * DOM-whitelist Markdown renderer (immune to `<img/onerror>`, `<svg onload>`, `javascript:` bypasses).
+ * Supports safe raster images (`https://`, `data:image/*`, `file://`, `/abs/path`, workspace-relative)
+ * via Electron's `desk-app://local-media` image-only protocol handler.
  */
-export function renderSanitizedMarkdown(markdown: string): string {
+export function renderSanitizedMarkdown(markdown: string, baseCwd?: string): string {
   if (!markdown) return '';
   const rawHtml = marked.parse(markdown) as string;
   if (typeof DOMParser === 'undefined') {
@@ -166,7 +311,7 @@ export function renderSanitizedMarkdown(markdown: string): string {
   const container = outDoc.createElement('div');
 
   for (const child of Array.from(parsed.body.childNodes)) {
-    const safeChild = sanitizeNode(child, outDoc);
+    const safeChild = sanitizeNode(child, outDoc, baseCwd);
     if (safeChild) container.appendChild(safeChild);
   }
 

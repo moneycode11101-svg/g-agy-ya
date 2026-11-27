@@ -245,3 +245,20 @@ body,
   color: var(--muted);
   font-weight: 600;
 }
+.md-prose img.md-chat-img {
+  display: block;
+  max-width: min(100%, 520px);
+  max-height: 440px;
+  width: auto;
+  height: auto;
+  margin: 0.65em 0;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  object-fit: contain;
+  cursor: zoom-in;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.md-prose img.md-chat-img:hover {
+  box-shadow: var(--shadow-md);
+}

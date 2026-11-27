@@ -239,6 +239,16 @@ export function createHostKernel(opts: {
       }
       return false;
     }),
+    rpc.handle<{ targetPath: string }, boolean>('kernel', 'kernel:shell:open-path', async ({ targetPath }) => {
+      if (typeof targetPath === 'string' && targetPath.trim()) {
+        const clean = targetPath.trim().replace(/^~(?=\/|$)/, os.homedir());
+        if (path.isAbsolute(clean) && fs.existsSync(clean)) {
+          const errMsg = await shell.openPath(clean);
+          return !errMsg;
+        }
+      }
+      return false;
+    }),
     rpc.handle<void, PersistedLayoutWorkspace | null>('kernel', 'kernel:workspace:load', async () => {
       try {
         if (!fs.existsSync(WORKSPACE_BACKUP_PATH)) return null;
