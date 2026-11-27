@@ -1,0 +1,3 @@
+# Exclude prebuilt zero-dependency bundled plugin artifacts from GitHub Linguist language stats & PR diffs
+bundled-plugins/token-band/server/mcp_server.bundle.mjs linguist-generated=true
+bundled-plugins/token-band/ui/dist/app.html linguist-generated=true
