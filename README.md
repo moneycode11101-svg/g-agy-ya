@@ -45,6 +45,7 @@
 
 - **UI X-Ray (`⌘⇧X`)**: 화면의 어느 영역이 어떤 플러그인으로 만들어져 있는지 바로 투시해서 봅니다.
 - **통창 플러그인 스튜디오 (`⌘⇧P`)**: 필요한 기능만 재시작 없이 실시간으로 켜고 끕니다. (위 GIF처럼 토큰밴드 스위치를 끄면 채팅창에서 바로 사라지고, 켜면 바로 살아납니다.)
+- **기본 내장 스킬·플러그인 (`Korean Pack` · `Token Band`)**: 처음 앱을 켜면 한국어 출력 규칙([`bundled-plugins/korean-pack`](bundled-plugins/korean-pack))과 토큰밴드 스킬·훅·MCP([`bundled-plugins/token-band`](bundled-plugins/token-band))가 `~/.gemini/config/plugins/`에 자동으로 깔립니다. (언제든 스튜디오에서 끄거나 `npm run install:plugins`로 재설치 가능)
 - **내 플러그인 직접 만들기**: 폴더 하나 만들어 마운트하면 코드를 고치는 즉시 앱 재시작 없이 바로 반영됩니다. ([샘플 플러그인 보기](examples/sample-focus-timer))
 
 ---

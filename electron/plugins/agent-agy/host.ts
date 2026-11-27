@@ -9,12 +9,19 @@ import {
   type AgySendPromptRequest,
 } from '../../../src/plugins/agent-agy/types';
 import { AgyPluginBridge } from './bridge';
+import { ensureBundledAgyPluginsInstalled } from './bundledPlugins';
 import { AgyQuotaService } from './quota';
 import { AgyRuntimeAssetProvider } from './runtimeAssets';
 import { analyzeSingleSession, listRecentSessions, loadTranscriptMessages } from './transcript';
 
 export const agentAgyHostPlugin: HostPluginModule<AgyPluginConfig> = {
   activate(ctx: DeskHostContext<AgyPluginConfig>) {
+    // Seed default bundled skills/plugins (`korean-pack`, `token-band`) on first launch
+    const seedResult = ensureBundledAgyPluginsInstalled();
+    if (seedResult.installed.length > 0) {
+      console.log(`[agent-agy] seeded bundled plugins: ${seedResult.installed.join(', ')}`);
+    }
+
     const quota = new AgyQuotaService();
 
     const bridge = new AgyPluginBridge({
