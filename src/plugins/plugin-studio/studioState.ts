@@ -20,11 +20,14 @@ export interface AskAgentPluginPayload {
 }
 
 interface PluginStudioUiState {
+  studioOpen: boolean;
   selectedNodeId: string | null;
   inspectorTab: InspectorTabId;
   pingedPluginId: string | null;
   pingedSlotId: SlotKind | null;
 
+  setStudioOpen: (open: boolean) => void;
+  toggleStudio: () => void;
   selectNode: (nodeId: string | null, tab?: InspectorTabId) => void;
   setInspectorTab: (tab: InspectorTabId) => void;
   pingPluginInUi: (pluginId: string | null, slotId?: SlotKind | null) => void;
@@ -61,10 +64,14 @@ function buildAskAgentPrompt(info: AskAgentPluginPayload): string {
 }
 
 export const usePluginStudioUiStore = create<PluginStudioUiState>((set) => ({
+  studioOpen: false,
   selectedNodeId: null,
   inspectorTab: 'overview',
   pingedPluginId: null,
   pingedSlotId: null,
+
+  setStudioOpen: (studioOpen) => set({ studioOpen }),
+  toggleStudio: () => set((s) => ({ studioOpen: !s.studioOpen })),
 
   selectNode: (nodeId, tab) =>
     set((s) => ({
@@ -95,24 +102,28 @@ export const usePluginStudioUiStore = create<PluginStudioUiState>((set) => ({
       set({ inspectorTab: tab });
     }
 
+    // Default: open as full-window view so the 3-tier architecture board never squishes inside split panes
+    if (!opts?.splitIfMissing) {
+      if (useIntrospectionStore.getState().xrayActive) {
+        useIntrospectionStore.getState().setXrayActive(false);
+      }
+      set({ studioOpen: true });
+      return;
+    }
+
     const existing = findExistingTabByPaneType('plugin-studio');
     const layout = useLayoutStore.getState();
     if (existing) {
       layout.setActiveTab(existing.groupId, existing.tabId);
       return;
     }
-
-    const shouldSplit = opts?.splitIfMissing ?? false;
-    if (shouldSplit) {
-      layout.openTab('plugin-studio', undefined, { split: 'h', side: 'after' });
-    } else {
-      layout.openTab('plugin-studio');
-    }
+    layout.openTab('plugin-studio', undefined, { split: 'h', side: 'after' });
   },
 
   askAgentAboutPlugin: (info) => {
     const promptText = buildAskAgentPrompt(info);
-    // Turn off X-Ray so user lands straight in chat
+    // Close full-window Studio & X-Ray so user lands straight in chat
+    set({ studioOpen: false });
     if (useIntrospectionStore.getState().xrayActive) {
       useIntrospectionStore.getState().setXrayActive(false);
     }

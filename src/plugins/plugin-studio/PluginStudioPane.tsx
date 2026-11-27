@@ -22,6 +22,7 @@ import {
   Search,
   ShieldAlert,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   BUILTIN_PLUGIN_IDS,
@@ -117,7 +118,9 @@ function fmtPulseTime(ts: number): string {
   return `${hh}:${mm}:${ss}.${ms}`;
 }
 
-export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
+export const PluginStudioPane: React.FC<PaneComponentProps & { onCloseOverlay?: () => void }> = ({
+  onCloseOverlay,
+}) => {
   const snapshot = useIntrospectionStore((s) => s.snapshot);
   const loading = useIntrospectionStore((s) => s.loading);
   const xrayActive = useIntrospectionStore((s) => s.xrayActive);
@@ -190,6 +193,8 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
   }, [selectedNodeId, selectNode]);
 
   const isCompact = paneWidth < compactBreakpoint;
+  const isNarrow = paneWidth < 600;
+  const isUltraNarrow = paneWidth < 400;
 
   const setNodeRef = (id: string) => (el: HTMLElement | null) => {
     if (el) nodeRefs.current.set(id, el);
@@ -463,99 +468,150 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
 
       {/* Top Control Toolbar */}
       <div
-        className="shrink-0 px-3.5 py-2.5 border-b flex flex-wrap items-center justify-between gap-2"
+        className={`shrink-0 ${isUltraNarrow ? 'px-2.5 py-2' : 'px-3.5 py-2.5'} border-b flex flex-col gap-2`}
         style={{ background: 'var(--sidebar)', borderColor: 'var(--border)' }}
       >
-        {/* Left: Title + Live Pill + Search */}
-        <div className="flex items-center gap-2.5 min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 shrink-0">
-            <Blocks size={16} style={{ color: 'var(--accent)' }} />
-            <span className="text-[13.5px] font-semibold tracking-tight">플러그인 스튜디오</span>
+        {/* Row 1: Title (+ Live Pill + Search on wide) + Primary Controls */}
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+              <Blocks size={15} style={{ color: 'var(--accent)' }} className="shrink-0" />
+              <span className="text-[13px] font-semibold tracking-tight whitespace-nowrap truncate">
+                {isUltraNarrow ? '플러그인' : '플러그인 스튜디오'}
+              </span>
+            </div>
+
+            {!isNarrow && (
+              <div
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[11px] font-mono num shrink-0 whitespace-nowrap"
+                style={{ background: 'var(--card)', borderColor: 'var(--border)', color: 'var(--fg-soft)' }}
+                title="실시간 DeskEventBus 트래픽 (10Hz Live Projection)"
+              >
+                <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: 'var(--ok)' }} />
+                <span>{snapshot ? `${snapshot.kernel.busEventsPerSec.toFixed(1)} evt/s` : '연결 중'}</span>
+                {snapshot && paneWidth >= 760 && <Sparkline values={snapshot.kernel.busSparkline} />}
+              </div>
+            )}
+
+            {!isNarrow && (
+              <div
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[12px] flex-1 max-w-[240px] min-w-[130px]"
+                style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+              >
+                <Search size={12} style={{ color: 'var(--muted)' }} className="shrink-0" />
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="플러그인 · 슬롯 · 스킬 검색..."
+                  className="w-full min-w-0 bg-transparent outline-none text-[12px]"
+                  style={{ color: 'var(--fg)' }}
+                />
+              </div>
+            )}
           </div>
 
-          <div
-            className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[11px] font-mono num shrink-0"
-            style={{ background: 'var(--card)', borderColor: 'var(--border)', color: 'var(--fg-soft)' }}
-            title="실시간 DeskEventBus 트래픽 (10Hz Live Projection)"
-          >
-            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--ok)' }} />
-            <span>{snapshot ? `${snapshot.kernel.busEventsPerSec.toFixed(1)} evt/s` : '연결 중'}</span>
-            {snapshot && <Sparkline values={snapshot.kernel.busSparkline} />}
-          </div>
+          {/* Right: Primary Controls */}
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => void handleMountLocalDialog()}
+              className={`inline-flex items-center gap-1 ${isUltraNarrow ? 'px-2 py-1 text-[11px]' : 'px-2.5 py-1 text-[12px]'} rounded-lg font-medium cursor-pointer transition-opacity hover:opacity-90 whitespace-nowrap shrink-0`}
+              style={{ background: 'var(--accent)', color: '#fff' }}
+              title="로컬 폴더의 desk-plugin.json을 앱 재빌드 없이 마운트하고 HMR 감시 시작"
+            >
+              <FolderPlus size={13} className="shrink-0" />
+              <span>{isUltraNarrow ? '마운트' : isNarrow ? '로컬 마운트' : '+ 로컬 플러그인 마운트'}</span>
+            </button>
 
-          <div
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[12px] flex-1 max-w-[240px] min-w-[120px]"
-            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
-          >
-            <Search size={12} style={{ color: 'var(--muted)' }} className="shrink-0" />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="플러그인 · 슬롯 · 스킬 검색..."
-              className="w-full bg-transparent outline-none text-[12px]"
-              style={{ color: 'var(--fg)' }}
-            />
+            <button
+              type="button"
+              onClick={toggleXray}
+              className={`inline-flex items-center gap-1 ${isUltraNarrow ? 'px-2 py-1 text-[11px]' : 'px-2.5 py-1 text-[12px]'} rounded-lg border font-medium cursor-pointer transition-colors hover:bg-[var(--surface-active)] whitespace-nowrap shrink-0`}
+              style={{
+                background: xrayActive ? 'color-mix(in srgb, var(--accent) 16%, var(--card))' : 'var(--card)',
+                borderColor: xrayActive ? 'var(--accent)' : 'var(--border)',
+                color: xrayActive ? 'var(--accent)' : 'var(--fg-soft)',
+              }}
+              title="UI X-Ray 투시 오버레이 토글 (⌘⇧X)"
+            >
+              <ScanEye size={13} className="shrink-0" />
+              <span>X-Ray</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void sendCommand({ type: 'plugin:open-config-file' })}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[12px] cursor-pointer hover:bg-[var(--surface-active)] whitespace-nowrap shrink-0"
+              style={{ background: 'var(--card)', borderColor: 'var(--border)', color: 'var(--fg-soft)' }}
+              title={snapshot?.profile.configFilePath || 'agy-desk-plugins.json 열기'}
+            >
+              <FileCode2 size={13} className="shrink-0" />
+              {!isCompact && <span>설정 파일</span>}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void refreshSnapshot()}
+              className="p-1.5 rounded-lg border cursor-pointer hover:bg-[var(--surface-active)] shrink-0"
+              style={{ background: 'var(--card)', borderColor: 'var(--border)', color: 'var(--muted)' }}
+              title="스냅샷 새로고침"
+            >
+              <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+            </button>
+
+            {onCloseOverlay && (
+              <button
+                type="button"
+                onClick={onCloseOverlay}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[12px] font-medium cursor-pointer hover:bg-[var(--surface-active)] whitespace-nowrap shrink-0"
+                style={{ background: 'var(--card)', borderColor: 'var(--border)', color: 'var(--fg-soft)' }}
+                title="플러그인 스튜디오 닫기 (Esc)"
+              >
+                <X size={13} className="shrink-0" />
+                <span>닫기</span>
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Right: Primary Controls */}
-        <div className="flex items-center gap-1.5 flex-wrap shrink-0">
-          <button
-            type="button"
-            onClick={() => void handleMountLocalDialog()}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium cursor-pointer transition-opacity hover:opacity-90"
-            style={{ background: 'var(--accent)', color: '#fff' }}
-            title="로컬 폴더의 desk-plugin.json을 앱 재빌드 없이 마운트하고 HMR 감시 시작"
-          >
-            <FolderPlus size={13} />
-            <span>+ 로컬 플러그인 마운트</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={toggleXray}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[12px] font-medium cursor-pointer transition-colors hover:bg-[var(--surface-active)]"
-            style={{
-              background: xrayActive ? 'color-mix(in srgb, var(--accent) 16%, var(--card))' : 'var(--card)',
-              borderColor: xrayActive ? 'var(--accent)' : 'var(--border)',
-              color: xrayActive ? 'var(--accent)' : 'var(--fg-soft)',
-            }}
-            title="UI X-Ray 투시 오버레이 토글 (⌘⇧X)"
-          >
-            <ScanEye size={13} />
-            <span>X-Ray</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => void sendCommand({ type: 'plugin:open-config-file' })}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[12px] cursor-pointer hover:bg-[var(--surface-active)]"
-            style={{ background: 'var(--card)', borderColor: 'var(--border)', color: 'var(--fg-soft)' }}
-            title={snapshot?.profile.configFilePath || 'agy-desk-plugins.json 열기'}
-          >
-            <FileCode2 size={13} />
-            {!isCompact && <span>설정 파일</span>}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => void refreshSnapshot()}
-            className="p-1.5 rounded-lg border cursor-pointer hover:bg-[var(--surface-active)]"
-            style={{ background: 'var(--card)', borderColor: 'var(--border)', color: 'var(--muted)' }}
-            title="스냅샷 새로고침"
-          >
-            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-          </button>
-        </div>
+        {/* Row 2 (Narrow split panes): Full-width Search + compact live pill */}
+        {isNarrow && (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[12px] flex-1 min-w-0"
+              style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+            >
+              <Search size={12} style={{ color: 'var(--muted)' }} className="shrink-0" />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="플러그인 · 슬롯 검색..."
+                className="w-full min-w-0 bg-transparent outline-none text-[12px]"
+                style={{ color: 'var(--fg)' }}
+              />
+            </div>
+            {!isUltraNarrow && (
+              <div
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[10.5px] font-mono num shrink-0 whitespace-nowrap"
+                style={{ background: 'var(--card)', borderColor: 'var(--border)', color: 'var(--fg-soft)' }}
+                title="실시간 DeskEventBus 트래픽"
+              >
+                <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: 'var(--ok)' }} />
+                <span>{snapshot ? `${snapshot.kernel.busEventsPerSec.toFixed(1)} e/s` : '…'}</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Filter & Summary Subbar */}
       <div
-        className="shrink-0 px-3.5 py-1.5 border-b flex items-center justify-between gap-2 text-[11.5px]"
+        className={`shrink-0 ${isUltraNarrow ? 'px-2.5' : 'px-3.5'} py-1.5 border-b flex items-center justify-between gap-2 text-[11.5px] min-w-0`}
         style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
       >
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 overflow-x-auto scroll-thin min-w-0">
           {(
             [
               { id: 'all', label: `전체 ${allPlugins.length}` },
@@ -570,7 +626,7 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
                 key={f.id}
                 type="button"
                 onClick={() => setFilterMode(f.id)}
-                className="px-2 py-0.5 rounded-md cursor-pointer transition-colors"
+                className="px-2 py-0.5 rounded-md cursor-pointer transition-colors whitespace-nowrap shrink-0"
                 style={{
                   background: active ? 'var(--surface-active)' : 'transparent',
                   color:
@@ -587,11 +643,13 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
             );
           })}
         </div>
-        <div className="hidden md:flex items-center gap-3 font-mono text-[11px] num" style={{ color: 'var(--muted)' }}>
-          <span>분할 {splitCounts.groups} · 탭 {splitCounts.tabs}</span>
-          {splitCounts.hiddenPreserved > 0 && <span>👻 숨김 보존 {splitCounts.hiddenPreserved}</span>}
-          {snapshot && <span>RSS {snapshot.kernel.memoryRssMb}MB</span>}
-        </div>
+        {paneWidth >= 520 && (
+          <div className="flex items-center gap-2.5 font-mono text-[11px] num whitespace-nowrap shrink-0" style={{ color: 'var(--muted)' }}>
+            <span>분할 {splitCounts.groups} · 탭 {splitCounts.tabs}</span>
+            {splitCounts.hiddenPreserved > 0 && <span>👻 {splitCounts.hiddenPreserved}</span>}
+            {snapshot && <span>RSS {snapshot.kernel.memoryRssMb}MB</span>}
+          </div>
+        )}
       </div>
 
       {/* Inline Stateful/Dependency Confirmation Bar */}
@@ -665,7 +723,7 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
                 if (target?.closest('[data-studio-selectable="true"], button, input, select, textarea, a')) return;
                 selectNode(null);
               }}
-              className="flex-1 min-w-0 min-h-0 overflow-auto scroll-thin p-4 relative"
+              className={`flex-1 min-w-0 min-h-0 overflow-auto scroll-thin ${isUltraNarrow ? 'p-2.5' : 'p-4'} relative`}
             >
               {!isCompact && (
                 <LiveEdgeSvgOverlay
@@ -779,13 +837,15 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
                 {/* TIER 2: LAYER 1 APP PLUGINS (BUILTIN + LOCAL DEV HMR)     */}
                 {/* ========================================================= */}
                 <section className="space-y-3">
-                  <div className="flex items-center justify-between px-1">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>
+                  <div className="flex items-center justify-between gap-2 px-1">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider truncate" style={{ color: 'var(--muted)' }}>
                       Tier 2 · App Plugins ({filteredPlugins.length})
                     </span>
-                    <span className="text-[10.5px]" style={{ color: 'var(--muted)' }}>
-                      클릭하여 인스펙터 열기
-                    </span>
+                    {!isUltraNarrow && (
+                      <span className="text-[10.5px] whitespace-nowrap shrink-0" style={{ color: 'var(--muted)' }}>
+                        클릭하여 인스펙터 열기
+                      </span>
+                    )}
                   </div>
 
                   {groupedPlugins.length === 0 ? (
@@ -1235,34 +1295,37 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
       >
         <div
           onClick={() => setTraceOpen((v) => !v)}
-          className="h-8 px-3.5 flex items-center justify-between gap-2 cursor-pointer hover:bg-[var(--surface)] transition-colors"
+          className={`min-h-8 py-1 ${isUltraNarrow ? 'px-2.5' : 'px-3.5'} flex items-center justify-between gap-2 cursor-pointer hover:bg-[var(--surface)] transition-colors min-w-0`}
         >
-          <div className="flex items-center gap-2 text-[11.5px] min-w-0">
-            <Radio size={12} style={{ color: tracePaused ? 'var(--muted)' : 'var(--accent)' }} />
-            <span className="font-semibold">LIVE EVENT BUS TRACE</span>
-            <span className="font-mono text-[10.5px] num" style={{ color: 'var(--muted)' }}>
+          <div className="flex items-center gap-1.5 text-[11.5px] min-w-0 overflow-hidden">
+            <Radio size={12} style={{ color: tracePaused ? 'var(--muted)' : 'var(--accent)' }} className="shrink-0" />
+            <span className="font-semibold whitespace-nowrap truncate">
+              {isUltraNarrow ? 'EVENT TRACE' : 'LIVE EVENT BUS TRACE'}
+            </span>
+            <span className="font-mono text-[10.5px] num whitespace-nowrap shrink-0" style={{ color: 'var(--muted)' }}>
               ({displayedPulses.length})
-              {selectedNodeId && selectedNodeId !== '__core__' ? ` · 필터: ${selectedNodeId}` : ''}
+              {!isNarrow && selectedNodeId && selectedNodeId !== '__core__' ? ` · 필터: ${selectedNodeId}` : ''}
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
               onClick={() => {
                 if (!tracePaused) setFrozenPulses(snapshot?.recentPulses || []);
                 setTracePaused((v) => !v);
               }}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10.5px] cursor-pointer hover:bg-[var(--card)]"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10.5px] cursor-pointer hover:bg-[var(--card)] whitespace-nowrap shrink-0"
               style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: 'var(--fg-soft)' }}
+              title={tracePaused ? '재개' : '일시정지'}
             >
               {tracePaused ? <Play size={10} /> : <Pause size={10} />}
-              <span>{tracePaused ? '재개' : '일시정지'}</span>
+              {!isUltraNarrow && <span>{tracePaused ? '재개' : '일시정지'}</span>}
             </button>
             <button
               type="button"
               onClick={() => setTraceErrorsOnly((v) => !v)}
-              className="px-2 py-0.5 rounded-md border text-[10.5px] cursor-pointer"
+              className="px-2 py-0.5 rounded-md border text-[10.5px] cursor-pointer whitespace-nowrap shrink-0"
               style={{
                 background: traceErrorsOnly ? 'color-mix(in srgb, var(--danger) 14%, var(--bg))' : 'var(--bg)',
                 borderColor: traceErrorsOnly ? 'var(--danger)' : 'var(--border)',
@@ -1274,7 +1337,7 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
             <button
               type="button"
               onClick={() => setTraceOpen((v) => !v)}
-              className="p-0.5 rounded cursor-pointer"
+              className="p-0.5 rounded cursor-pointer shrink-0"
               style={{ color: 'var(--muted)' }}
             >
               {traceOpen ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
@@ -1284,14 +1347,18 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
 
         {traceOpen && (
           <div
-            className="h-[132px] border-t flex min-h-0"
+            className={`h-[132px] border-t flex ${isNarrow ? 'flex-col' : 'flex-row'} min-h-0`}
             style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
           >
             <div className="flex-1 min-w-0 overflow-y-auto scroll-thin divide-y font-mono text-[11px]" style={{ borderColor: 'var(--border)' }}>
               {displayedPulses.length === 0 ? (
-                <div className="h-full flex items-center justify-center gap-1.5 text-[11.5px] font-sans" style={{ color: 'var(--muted)' }}>
-                  <Activity size={13} />
-                  <span>실시간 이벤트 대기 중… (채팅·터미널·플러그인 토글 시 펄스가 표시됩니다)</span>
+                <div className="h-full px-3 flex items-center justify-center gap-1.5 text-[11.5px] font-sans text-center" style={{ color: 'var(--muted)' }}>
+                  <Activity size={13} className="shrink-0" />
+                  <span className="break-keep">
+                    {isUltraNarrow
+                      ? '실시간 이벤트 대기 중…'
+                      : '실시간 이벤트 대기 중… (채팅·터미널·플러그인 토글 시 펄스가 표시됩니다)'}
+                  </span>
                 </div>
               ) : (
                 displayedPulses.map((p) => (
@@ -1332,7 +1399,7 @@ export const PluginStudioPane: React.FC<PaneComponentProps> = () => {
 
             {selectedPulse && selectedPulse.payloadPreview && (
               <div
-                className="w-[280px] shrink-0 border-l p-2 overflow-auto scroll-thin text-[10.5px] font-mono"
+                className={`${isNarrow ? 'w-full h-[68px] border-t' : 'w-[280px] border-l'} shrink-0 p-2 overflow-auto scroll-thin text-[10.5px] font-mono`}
                 style={{ background: 'var(--sidebar)', borderColor: 'var(--border)' }}
               >
                 <div className="flex items-center justify-between mb-1">

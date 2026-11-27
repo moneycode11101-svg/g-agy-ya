@@ -1,72 +1,80 @@
 <div align="center">
 
-<img src="assets/icon.png" alt="g-agy-ya icon" width="96" />
+<img src="assets/icon.png" alt="g-agy-ya icon" width="88" />
 
 # g-agy-ya (제제이야)
 
-**Antigravity · Claude Code · OpenAI Codex in one infinite-split desktop workspace.**  
-An ultra-lightweight, zero-telemetry Electron multi-agent workspace powered directly by your local official CLIs.
+**Built out of pure frustration because vanilla Antigravity (`agy`) wouldn't even let me add a simple Token Band.**
 
 [한국어](README.md) · [English](README.en.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Electron](https://img.shields.io/badge/Electron-36-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
-[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25-16a34a.svg)](#privacy--local-first-design)
-
-<br />
-
-<img src="docs/screenshots/model-picker.png" alt="g-agy-ya multi-agent chat with hierarchical model picker" width="100%" />
+[![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25-16a34a.svg)](#faq)
 
 </div>
 
 ---
 
-## Why g-agy-ya?
+## Why I Built This
 
-Stop juggling terminal tabs, browser windows, and separate AI apps. **g-agy-ya** connects directly to the official CLIs already installed on your machine (`agy`, `claude`, `codex`) inside a single infinite-split desktop workspace.
+I just wanted to add a small **Token Band** to vanilla Antigravity so I could see how many tokens I was burning and how much quota I had left.  
+Vanilla wouldn't even let me build that.
 
-- **BYO CLI · 0% Telemetry**: No cloud relay, no analytics, no proprietary credential vault. It uses your existing official CLI sessions, local skills, rules, hooks, and MCP servers as-is.
-- **One-Click In-App CLI Re-Login**: When a CLI session expires, sign back in right from the chat banner or settings (`agy acp` / `claude auth login` / `codex login`) and automatically resend your interrupted message.
-- **Zero-Feature Micro-Kernel**: All **16 built-in features**—chat, terminal, embedded webview, Git Diff, token HUD, and every agent adapter—run as isolated plugins with live toggle and hot-reload support.
+So I built my own desktop app from scratch. Since I was building it anyway, I made **everything a plugin you can swap or build yourself**, put **Antigravity, Claude Code, and OpenAI Codex in one app**, and added **infinite split panes** so you never have to juggle windows again.
+
+<p align="center">
+  <img src="docs/demos/token-band.gif" alt="Live Token Band above the chat composer and unified 3-provider quota dashboard" width="100%" />
+</p>
+
+- See **current context size, cache hit rate, generation speed (`tok/s`), and 5-hour/weekly limits** right above your chat box.
+- Click to expand **per-tool token spikes** and **recent turn history**.
+- Open the **Unified Token Band (`⌘⇧U`)** to compare Antigravity, Claude Code, and Codex quotas side by side.
 
 ---
 
-## Key Features
+## Core Features
 
-### 1. Three Native Persistent Multi-Agent Adapters
+### 1. Plugin-First Philosophy — Everything Is a Plugin
 
-| Engine | Transport / Runtime | Highlights |
-| :--- | :--- | :--- |
-| **Antigravity (`agy`)** | Official `agy acp --stdio` daemon | 27+ models with cascading effort picker, multimodal image drag-and-drop, live thinking/tools/approval stream, queued follow-ups (send-now / edit / delete), one-click ACP loopback login |
-| **Claude Code (`claude`)** | Official `@anthropic-ai/claude-agent-sdk` | Preserves local `CLAUDE.md`, hooks, skills & MCP, interactive tool approvals & `AskUserQuestion` cards, live 5h/weekly quota via SDK IPC, one-click `claude auth login` |
-| **OpenAI Codex (`codex`)** | Official `codex app-server --stdio` JSONL | Live turn steering, interactive approvals & questions, multi-profile `CODEX_HOME` switching, live 5h/weekly rate limits, one-click `codex login` |
+Because this whole project started from not being able to add a single bar, **every feature in the app is an independent plugin**—chat, Token Band, built-in browser, terminal, and Git Diff.
 
-- **Image Drag-and-Drop & Thumbnail Strip**: Drag images from Finder, screenshots, or clipboard (`⌘V`) onto any chat pane to stack thumbnails above the composer, with full-size lightbox preview and folder (`--add-dir`) drop support.
-- **Fast Composer Ergonomics**: Live `@` workspace file mentions, `/` slash commands & installed skills autocomplete, and clean Korean IME single-Enter submit.
+<p align="center">
+  <img src="docs/demos/plugin-philosophy.gif" alt="UI X-Ray overlay and full-window Plugin Studio toggling Token Band live" width="100%" />
+</p>
 
-### 2. Two-Layer Token Band & Infinite Split Workspace
+- **UI X-Ray (`⌘⇧X`)**: Inspect which plugin owns any part of the screen at a glance.
+- **Full-Window Plugin Studio (`⌘⇧P`)**: Turn features on or off live without restarting the app (watch the Token Band vanish and pop back in real time above).
+- **Build & Mount Your Own**: Point to a local plugin folder and see your edits hot-reload immediately without rebuilding the app ([see sample plugin](examples/sample-focus-timer)).
 
-<img src="docs/screenshots/token-band.png" alt="Global Token Band board comparing Antigravity, Claude Code, and Codex quotas and live sessions" width="100%" />
+---
 
-- **Global Token Band Board (`⌘⇧U`)**: Compare all three subscriptions side-by-side—Antigravity (`Gemini` & `Claude·GPT` pools), `Claude Code` (5h / weekly / model-scoped weekly), and `Codex` (5h / weekly)—complete with even-pace markers (`│`), instant disk-cached startup restore, a live list of every open chat session's context & cache hit rate, and aggregated workspace tool `+token` rankings.
-- **1:1 Local Chat HUD**: Above each chat composer, automatically matches the active tab's engine & model (Gemini quota / Antigravity Claude·GPT / Claude Code / Codex) with exact per-model context windows (`1M` / `200K` / `400K`) at zero prompt token overhead.
+### 2. Multiple Models in One App — Antigravity · Claude · Codex
 
-<img src="docs/screenshots/split-webview.png" alt="Live Token HUD and embedded Webview split view" width="100%" />
+Stop bouncing between apps and terminal tabs every time you want a different model.  
+**g-agy-ya** plugs directly into the official CLIs already installed on your machine (`agy`, `claude`, `codex`).
 
-- **Recursive Split Tree & Drag-to-Dock**: Split horizontally (`⌘D`) or vertically (`⌘⇧D`) endlessly, drag tabs to any edge to dock, pin/color/rename tabs.
-- **Embedded Chromium Webview (`⌘T`)**: Preview `localhost:3000` / `:5173` apps or documentation right alongside your agent, with one-click DevTools toggle.
-- **Built-In PTY Terminal (`⌘⇧T`) & Git Diff**: Full `xterm.js` terminal and live Git diff viewer as first-class panes.
+<p align="center">
+  <img src="docs/demos/multi-model.gif" alt="Switching between Antigravity 27+ models, Claude Code, and OpenAI Codex side-by-side" width="100%" />
+</p>
 
-### 3. Plugin Studio & UI X-Ray
+- Switch between **Antigravity, Claude Code, and OpenAI Codex** in one click.
+- Pick from **27+ models and reasoning effort levels** without leaving the chat.
+- Put **all three agents side by side in one window** to compare answers or run tasks in parallel.
+- No extra API keys or middleman servers—keeps your existing official CLI logins, local skills, rules, and MCP servers intact.
 
-<img src="docs/screenshots/xray-overlay.png" alt="Plugin Studio and live UI X-Ray overlay" width="100%" />
+---
 
-- **Plugin Studio (`⌘⇧P`)**: Inspect the core kernel, toggle all 16 built-in plugins live, view slot occupancy, and monitor the live Event Bus Trace.
-- **UI X-Ray (`⌘⇧X`)**: Overlay every mounted plugin boundary and slot directly onto the live UI.
-- **External Local Plugin HMR**: Mount any local plugin folder and edit with `esbuild` Compile-Before-Swap hot reload (see [`examples/sample-focus-timer`](examples/sample-focus-timer)).
-- **Runtime Context Inspector**: Dynamically scans your local `~/.gemini/config/`, `~/.claude/`, and `~/.codex/` skills, rules, hooks, and MCP servers with estimated/measured token costs.
+### 3. Infinite Split Workspace — Chat, Browser & Terminal Together
+
+No more `⌘Tab` ping-pong between your AI chat, browser preview, and terminal.
+
+<p align="center">
+  <img src="docs/demos/split-workspace.gif" alt="Splitting chat with embedded browser, PTY terminal, and drag-and-drop docking into a 4-pane workspace" width="100%" />
+</p>
+
+- **Split endlessly** horizontally (`⌘D`) or vertically (`⌘⇧D`).
+- **Drag any tab to any edge** to dock and rearrange panes on the fly.
+- **Built-in Browser (`⌘T`) & Terminal (`⌘⇧T`)**: Keep `localhost`, docs, GitHub, and a live shell right next to your agent.
 
 ---
 
@@ -74,81 +82,47 @@ Stop juggling terminal tabs, browser windows, and separate AI apps. **g-agy-ya**
 
 ### Prerequisites
 
-- **Node.js 22+** and **npm**
-- **macOS** recommended (Electron runs cross-platform; built-in terminal pane uses `python3`)
-- Install **one or more** of the supported official CLIs (you only need the ones you use):
-  - **Antigravity CLI (`agy`)**: Sign in via `agy` or the in-app **CLI Login** button
-  - **Claude Code (`claude`)**: `npm install -g @anthropic-ai/claude-code` then `claude auth login` (or in-app)
-  - **OpenAI Codex (`codex`)**: `npm install -g @openai/codex` (or auto-detected from ChatGPT/Codex macOS app) then `codex login`
+- **Node.js 22+**
+- **At least one** of the official CLIs below (you don't need all three):
+  - **Antigravity (`agy`)**: Sign in via `agy` or one-click login inside the app
+  - **Claude Code (`claude`)**: `npm install -g @anthropic-ai/claude-code`
+  - **OpenAI Codex (`codex`)**: `npm install -g @openai/codex`
 
-### Install & Run
+### Run in 3 Lines
 
 ```bash
 git clone https://github.com/moneycode11101-svg/g-agy-ya.git
 cd g-agy-ya
-npm install
-
-# Development mode (Vite HMR + Electron)
-npm run dev
-
-# Production build & launch
-npm start
+npm install && npm start
 ```
+
+> Use `npm run dev` if you want live hot-reload while hacking on the app.
 
 ---
 
-## Keyboard Shortcuts
+## Handy Shortcuts
 
 | Shortcut | Action |
 | :--- | :--- |
-| `⌘N` | Open new chat tab |
+| `⌘N` | Open new chat |
 | `⌘D` / `⌘⇧D` | Split right / split down |
-| `⌘T` | Open embedded Webview split |
-| `⌘⇧T` | Open PTY Terminal split |
-| `⌘⇧U` | Open Global Token Band board |
-| `⌘⇧P` | Open Plugin Studio |
+| `⌘T` | Open built-in browser split |
+| `⌘⇧T` | Open terminal split |
+| `⌘⇧U` | Open Unified Token Band dashboard |
+| `⌘⇧P` | Open Plugin Studio (full window) |
 | `⌘⇧X` | Toggle UI X-Ray overlay |
-| `⌘B` | Toggle workspace sidebar |
-| `⌘W` | Close active tab |
-| `Enter` / `⌥Enter` | Send (or queue while running) / steer & send immediately |
-| `⌃C` | Cancel active generation |
+| `⌘B` | Toggle sidebar |
 
 ---
 
-## Architecture
+## FAQ
 
-```mermaid
-flowchart TB
-  subgraph Renderer["Renderer (React 19 · Tailwind v4 · Zustand)"]
-    UI["SplitTree · PaneGroupView · SlotOutlet"]
-    Chat["pane-chat · ModelPickerPopover · AttachmentThumbnail"]
-    Studio["plugin-studio · UI X-Ray · RuntimeContextInspector"]
-    HUD["hud-token-bar · sidebar-workspace"]
-  end
-
-  subgraph Bridge["Preload Bridge (sandbox: true · contextIsolation: true)"]
-    K["window.deskKernel (env · rpc · bus · plugins · introspection · files)"]
-  end
-
-  subgraph Main["Electron Main — Zero-Feature Host Kernel"]
-    Kernel["EventBus · RpcRouter · ServiceRegistry · LocalPluginCompiler (esbuild HMR)"]
-    Agy["agent-agy (agy acp --stdio)"]
-    Claude["agent-claude (Claude Agent SDK)"]
-    Codex["agent-codex (codex app-server JSONL)"]
-    Panes["pane-terminal · pane-webview · pane-git-diff"]
-  end
-
-  Renderer <--> Bridge <--> Kernel
-  Kernel --> Agy & Claude & Codex & Panes
-```
-
----
-
-## Privacy & Local-First Design
-
-- **0% Telemetry**: Zero analytics, crash trackers, or external cloud relays anywhere in the codebase.
-- **Clean Local Separation**: No personal skills, prompts, or credentials are bundled. The app dynamically discovers only what is installed in the running user's local CLI directories (`~/.gemini/config`, `~/.claude`, `~/.codex`).
-- **Strict Sandboxing**: Both the main renderer and embedded `<webview>` run with `sandbox: true`, `contextIsolation: true`, and `nodeIntegration: false`.
+- **Does anything leave my machine?**  
+  No. **0% telemetry, 0 cloud relays.** It only talks to the official CLIs running locally on your computer.
+- **What if my CLI login expires?**  
+  Sign back in right inside the app with one click.
+- **Does it work outside macOS?**  
+  Built primarily for macOS, but runs on Windows/Linux via Electron as well (the built-in terminal pane requires `python3`).
 
 ---
 

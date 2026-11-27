@@ -147,7 +147,7 @@ export const PluginInspectorDrawer: React.FC<PluginInspectorDrawerProps> = ({
   }
 
   const containerCls = compactOverlay
-    ? 'absolute inset-y-0 right-0 z-30 w-[330px] max-w-[92%] border-l flex flex-col shadow-xl'
+    ? 'absolute inset-y-0 right-0 z-30 w-[min(340px,100%)] border-l flex flex-col shadow-xl'
     : 'w-[340px] shrink-0 border-l flex flex-col min-h-0';
 
   if (isCore) {
@@ -336,7 +336,7 @@ export const PluginInspectorDrawer: React.FC<PluginInspectorDrawerProps> = ({
             <button
               type="button"
               onClick={() => onRequestToggle(node, !isEnabled)}
-              className="px-2.5 py-1 rounded-lg text-[11.5px] font-medium cursor-pointer transition-opacity hover:opacity-90"
+              className="px-2.5 py-1 rounded-lg text-[11.5px] font-medium cursor-pointer transition-opacity hover:opacity-90 whitespace-nowrap shrink-0"
               style={{
                 background: isEnabled ? 'var(--surface)' : 'var(--accent)',
                 color: isEnabled ? 'var(--fg)' : '#fff',
@@ -347,7 +347,7 @@ export const PluginInspectorDrawer: React.FC<PluginInspectorDrawerProps> = ({
             </button>
           ) : (
             <span
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] border"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] border whitespace-nowrap shrink-0"
               style={{ borderColor: 'var(--border)', color: 'var(--muted)' }}
             >
               <Lock size={11} /> 잠김
@@ -361,11 +361,11 @@ export const PluginInspectorDrawer: React.FC<PluginInspectorDrawerProps> = ({
               if (res.ok) pushToast(`${node.id} 리로드 완료`, 'info');
               else pushToast(res.error || '리로드 실패', 'error');
             }}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11.5px] cursor-pointer hover:bg-[var(--surface)]"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11.5px] cursor-pointer hover:bg-[var(--surface)] whitespace-nowrap shrink-0"
             style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: 'var(--fg-soft)' }}
             title="핫리로드"
           >
-            <RotateCw size={11} />
+            <RotateCw size={11} className="shrink-0" />
             <span>리로드</span>
           </button>
 
@@ -377,11 +377,11 @@ export const PluginInspectorDrawer: React.FC<PluginInspectorDrawerProps> = ({
                 if (res.ok) pushToast(`${node.id} 이전 정상 버전으로 롤백 완료`, 'info');
                 else pushToast(res.error || '롤백 실패', 'error');
               }}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11.5px] cursor-pointer hover:bg-[var(--surface)]"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11.5px] cursor-pointer hover:bg-[var(--surface)] whitespace-nowrap shrink-0"
               style={{ background: 'var(--bg)', borderColor: 'var(--warn)', color: 'var(--warn)' }}
               title="이전 정상 번들로 롤백"
             >
-              <History size={11} />
+              <History size={11} className="shrink-0" />
               <span>롤백</span>
             </button>
           )}
@@ -390,11 +390,11 @@ export const PluginInspectorDrawer: React.FC<PluginInspectorDrawerProps> = ({
             <button
               type="button"
               onClick={() => void sendCommand({ type: 'plugin:reveal-source', pluginId: node.id })}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11.5px] cursor-pointer hover:bg-[var(--surface)]"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11.5px] cursor-pointer hover:bg-[var(--surface)] whitespace-nowrap shrink-0"
               style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: 'var(--fg-soft)' }}
               title={node.sourcePath}
             >
-              <FolderOpen size={11} />
+              <FolderOpen size={11} className="shrink-0" />
               <span>폴더</span>
             </button>
           )}
@@ -411,7 +411,7 @@ export const PluginInspectorDrawer: React.FC<PluginInspectorDrawerProps> = ({
                 errorStack: node.health.lastError?.stack,
               })
             }
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11.5px] cursor-pointer hover:bg-[var(--surface)]"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11.5px] cursor-pointer hover:bg-[var(--surface)] whitespace-nowrap shrink-0"
             style={{
               background: 'color-mix(in srgb, var(--accent) 10%, var(--bg))',
               borderColor: 'color-mix(in srgb, var(--accent) 35%, var(--border))',
@@ -419,13 +419,13 @@ export const PluginInspectorDrawer: React.FC<PluginInspectorDrawerProps> = ({
             }}
             title="이 플러그인을 에이전트 채팅으로 바로 수정 요청"
           >
-            <Sparkles size={11} />
+            <Sparkles size={11} className="shrink-0" />
             <span>에이전트에 묻기</span>
           </button>
         </div>
 
         {/* Sub-tabs */}
-        <div className="flex items-center gap-1 pt-0.5">
+        <div className="flex items-center gap-1 pt-0.5 overflow-x-auto scroll-thin">
           {tabs.map((t) => {
             const active = inspectorTab === t.id;
             return (
@@ -433,7 +433,7 @@ export const PluginInspectorDrawer: React.FC<PluginInspectorDrawerProps> = ({
                 key={t.id}
                 type="button"
                 onClick={() => setInspectorTab(t.id)}
-                className="flex-1 py-1 rounded-lg text-[11.5px] font-medium cursor-pointer transition-colors flex items-center justify-center gap-1"
+                className="flex-1 min-w-fit px-2 py-1 rounded-lg text-[11.5px] font-medium cursor-pointer transition-colors flex items-center justify-center gap-1 whitespace-nowrap shrink-0"
                 style={{
                   background: active ? 'var(--surface-active)' : 'transparent',
                   color: active ? 'var(--fg)' : 'var(--muted)',

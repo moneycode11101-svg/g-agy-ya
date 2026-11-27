@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Blocks, ScanEye, X } from 'lucide-react';
 import {
   useIntrospectionStore,
@@ -13,14 +13,15 @@ import { usePluginStudioUiStore } from './studioState';
 import { XrayOverlay } from './XrayOverlay';
 
 const SidebarStudioEntryButton: React.FC = () => {
-  const openStudioAndInspect = usePluginStudioUiStore((s) => s.openStudioAndInspect);
+  const studioOpen = usePluginStudioUiStore((s) => s.studioOpen);
+  const toggleStudio = usePluginStudioUiStore((s) => s.toggleStudio);
   const snapshot = useIntrospectionStore((s) => s.snapshot);
   const groups = useLayoutStore((s) => s.groups);
   const focusedGroupId = useLayoutStore((s) => s.focusedGroupId);
 
   const focusedGroup = groups[focusedGroupId];
   const activeTab = focusedGroup?.tabs.find((t) => t.id === focusedGroup.activeTabId);
-  const isStudioFocused = activeTab?.paneType === 'plugin-studio';
+  const isStudioFocused = studioOpen || activeTab?.paneType === 'plugin-studio';
 
   const errorCount = snapshot
     ? Object.values(snapshot.plugins).filter(
@@ -34,7 +35,7 @@ const SidebarStudioEntryButton: React.FC = () => {
   return (
     <button
       type="button"
-      onClick={() => openStudioAndInspect(undefined, undefined, { splitIfMissing: false })}
+      onClick={() => toggleStudio()}
       className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[13px] cursor-pointer transition-colors hover:bg-[var(--surface-active)]"
       style={{
         background: isStudioFocused ? 'var(--surface-active)' : undefined,
@@ -72,7 +73,9 @@ const TitlebarVisualControls: React.FC = () => {
   const xrayActive = useIntrospectionStore((s) => s.xrayActive);
   const toggleXray = useIntrospectionStore((s) => s.toggleXray);
   const snapshot = useIntrospectionStore((s) => s.snapshot);
-  const openStudioAndInspect = usePluginStudioUiStore((s) => s.openStudioAndInspect);
+  const studioOpen = usePluginStudioUiStore((s) => s.studioOpen);
+  const toggleStudio = usePluginStudioUiStore((s) => s.toggleStudio);
+  const setStudioOpen = usePluginStudioUiStore((s) => s.setStudioOpen);
 
   const hasError = snapshot
     ? Object.values(snapshot.plugins).some(
@@ -84,7 +87,10 @@ const TitlebarVisualControls: React.FC = () => {
     <div className="flex items-center gap-0.5 app-no-drag">
       <button
         type="button"
-        onClick={toggleXray}
+        onClick={() => {
+          if (!xrayActive && studioOpen) setStudioOpen(false);
+          toggleXray();
+        }}
         className="p-1.5 rounded-lg cursor-pointer transition-colors hover:bg-[var(--surface)]"
         style={{
           color: xrayActive ? 'var(--accent)' : 'var(--muted)',
@@ -96,10 +102,16 @@ const TitlebarVisualControls: React.FC = () => {
       </button>
       <button
         type="button"
-        onClick={() => openStudioAndInspect(undefined, undefined, { splitIfMissing: true })}
+        onClick={() => {
+          if (!studioOpen && xrayActive) toggleXray();
+          toggleStudio();
+        }}
         className="relative p-1.5 rounded-lg cursor-pointer transition-colors hover:bg-[var(--surface)]"
-        style={{ color: 'var(--muted)' }}
-        title="플러그인 스튜디오 분할 열기 (⌘⇧P)"
+        style={{
+          color: studioOpen ? 'var(--accent)' : 'var(--muted)',
+          background: studioOpen ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : undefined,
+        }}
+        title="플러그인 스튜디오 열기 (⌘⇧P)"
       >
         <Blocks size={15} />
         {hasError && (
@@ -109,6 +121,49 @@ const TitlebarVisualControls: React.FC = () => {
           />
         )}
       </button>
+    </div>
+  );
+};
+
+const FullWindowStudioOverlay: React.FC = () => {
+  const studioOpen = usePluginStudioUiStore((s) => s.studioOpen);
+  const setStudioOpen = usePluginStudioUiStore((s) => s.setStudioOpen);
+  const selectedNodeId = usePluginStudioUiStore((s) => s.selectedNodeId);
+  const xrayActive = useIntrospectionStore((s) => s.xrayActive);
+
+  useEffect(() => {
+    if (!studioOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !selectedNodeId) {
+        setStudioOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [studioOpen, selectedNodeId, setStudioOpen]);
+
+  // Hide full-window studio while X-Ray is active so the user can inspect their actual workspace panes
+  if (!studioOpen || xrayActive) return null;
+
+  return (
+    <div
+      className="fixed inset-x-0 top-11 bottom-0 z-[82] flex flex-col"
+      style={{ background: 'var(--bg)' }}
+    >
+      <PluginStudioPane
+        groupId="__studio_overlay__"
+        tab={{
+          id: '__studio_overlay_tab__',
+          paneType: 'plugin-studio',
+          ownerPluginId: 'plugin-studio',
+          title: '플러그인 스튜디오',
+          state: {},
+        }}
+        active
+        updateState={() => {}}
+        updateTabMeta={() => {}}
+        onCloseOverlay={() => setStudioOpen(false)}
+      />
     </div>
   );
 };
@@ -205,7 +260,14 @@ const pluginStudioClient: ClientPluginModule = {
       Component: TitlebarVisualControls,
     });
 
-    // 4. Register UI X-Ray Overlay & Toast HUD in overlay.layer
+    // 4. Register Full-Window Studio Overlay, UI X-Ray Overlay & Toast HUD in overlay.layer
+    ctx.slots.register('overlay.layer', {
+      id: 'plugin-studio-full-overlay',
+      zLayer: 'modal',
+      order: 5,
+      Component: FullWindowStudioOverlay,
+    });
+
     ctx.slots.register('overlay.layer', {
       id: 'ui-xray-overlay',
       zLayer: 'xray',
@@ -237,7 +299,11 @@ const pluginStudioClient: ClientPluginModule = {
       title: '플러그인 스튜디오 열기',
       shortcut: 'Mod+Shift+P',
       run: () => {
-        usePluginStudioUiStore.getState().openStudioAndInspect(undefined, undefined, { splitIfMissing: true });
+        const ui = usePluginStudioUiStore.getState();
+        if (!ui.studioOpen && useIntrospectionStore.getState().xrayActive) {
+          useIntrospectionStore.getState().setXrayActive(false);
+        }
+        ui.toggleStudio();
       },
     });
 

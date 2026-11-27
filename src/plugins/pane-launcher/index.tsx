@@ -117,11 +117,11 @@ function createLauncherComponent(ctx: DeskClientContext): React.FC<PaneComponent
 
     return (
       <div
-        className="flex-1 min-h-0 overflow-y-auto scroll-thin flex items-center justify-center p-6 @container"
+        className="flex-1 min-h-0 overflow-y-auto scroll-thin flex items-start @[420px]:items-center justify-center p-3.5 @[420px]:p-6 @container"
         style={{ background: 'var(--bg)' }}
         onContextMenu={handleContextMenu}
       >
-        <div className="w-full max-w-[480px] space-y-5">
+        <div className="w-full max-w-[480px] space-y-4 @[420px]:space-y-5">
           <div className="space-y-1">
             <h2 className="text-[16px] font-semibold tracking-tight" style={{ color: 'var(--fg)' }}>
               이 분할 창에 무엇을 열까요?
@@ -188,7 +188,7 @@ function createLauncherComponent(ctx: DeskClientContext): React.FC<PaneComponent
           )}
 
           {/* 동적 패인 플러그인 카드 그리드 (내장 + 로컬 마운트 플러그인 자동 반영) */}
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-1 @[360px]:grid-cols-2 gap-2.5">
             {filteredPanes.map((pane) => {
               const Icon = pane.icon;
               const accent = pane.accentColor || 'var(--accent)';

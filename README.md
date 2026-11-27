@@ -1,154 +1,130 @@
 <div align="center">
 
-<img src="assets/icon.png" alt="g-agy-ya icon" width="96" />
+<img src="assets/icon.png" alt="g-agy-ya icon" width="88" />
 
 # 제제이야 (`g-agy-ya`)
 
-**Antigravity · Claude Code · OpenAI Codex를 하나의 무한 분할 워크스페이스에서.**  
-로컬 공식 CLI 세션을 그대로 연결하는 초경량 · 텔레메트리 0% 멀티 에이전트 Electron 데스크톱 앱.
+**순정 Antigravity(`agy`)에 토큰밴드 하나 달려는데 그것조차 못 만들게 막혀 있어서, 답답해서 직접 만든 AI 작업 앱.**
 
 [한국어](README.md) · [English](README.en.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Electron](https://img.shields.io/badge/Electron-36-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
-[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25-16a34a.svg)](#프라이버시--로컬-우선-설계)
-
-<br />
-
-<img src="docs/screenshots/model-picker.png" alt="g-agy-ya 멀티 에이전트 채팅과 계층형 모델 피커" width="100%" />
+[![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25-16a34a.svg)](#자주-묻는-것)
 
 </div>
 
 ---
 
-## 왜 제제이야(`g-agy-ya`)인가?
+## 왜 만들었나요?
 
-터미널 창 여러 개, 브라우저, AI 에이전트 앱 사이를 오갈 필요 없이 **내 PC에 설치된 공식 CLI(`agy`, `claude`, `codex`)를 한 화면에 모아 무한 분할**로 작업할 수 있습니다.
+순정 Antigravity를 쓰다가 **"지금 토큰을 얼마나 쓰고 있지? 한도가 얼마나 남았지?"** 보고 싶어서 토큰밴드 하나만 붙이려고 했습니다.  
+그런데 순정 앱은 그 간단한 바 하나조차 못 만들게 꽉 막혀 있었습니다.
 
-- **BYO CLI · 텔레메트리 0%**: 외부 중계 서버·분석 스크립트·별도 API 키 저장 없이, 본인 PC의 공식 CLI 로그인과 로컬 스킬·규칙·MCP 설정을 그대로 이어받습니다.
-- **한 번의 클릭으로 CLI 재로그인**: CLI 세션이 만료돼도 앱 안에서 바로 공식 로그인(`agy acp` / `claude auth login` / `codex login`)을 완료하고 방금 실패한 메시지를 자동 재전송합니다.
-- **제로 피처(Zero-Feature) 플러그인 커널**: 채팅, 터미널, 웹뷰, Git Diff, 토큰 HUD, 에이전트 어댑터까지 총 **16개 기능이 모두 독립 플러그인**으로 분리되어 실시간 On/Off·핫 리로드가 가능합니다.
+답답해서 그냥 직접 만들었습니다. 어차피 새로 만드는 김에 **내가 원하는 기능은 전부 플러그인으로 마음대로 붙이고 떼고**, **다른 AI 모델도 앱 안 갈아타고 한 곳에서 쓰고**, **창도 원하는 대로 쪼개 쓸 수 있게** 만들었습니다.
+
+<p align="center">
+  <img src="docs/demos/token-band.gif" alt="채팅 위 실시간 토큰밴드와 반중력·Claude·Codex 3사 통합 한도 보드" width="100%" />
+</p>
+
+- 채팅 입력창 바로 위에서 **지금 쌓인 토큰, 캐시 적중률, 생성 속도(`tok/s`), 5시간·주간 한도**를 실시간으로 봅니다.
+- 눌러서 펼치면 **어떤 도구가 토큰을 얼마나 먹었는지**, **최근 턴 기록**까지 바로 확인됩니다.
+- **토큰 밴드 통합 보드(`⌘⇧U`)** 를 열면 반중력 · Claude Code · Codex 3사 구독 한도를 한 화면에서 비교할 수 있습니다.
 
 ---
 
 ## 핵심 기능
 
-### 1. 3대 에이전트 공식 프로토콜 상주 세션
+### 1. 플러그인 철학 — 모든 기능이 플러그인
 
-| 엔진 | 프로토콜 / 런타임 | 주요 지원 기능 |
-| :--- | :--- | :--- |
-| **Antigravity (`agy`)** | 공식 `agy acp --stdio` 상주 데몬 | 27+ 모델 계층형 피커(추론 강도 선택), 멀티모달 이미지 드롭, 사고 과정·도구·승인 카드 실시간 스트리밍, 메시지 대기열(`→` 즉시 전송 / 편집 / 삭제), 원클릭 ACP 로그인 |
-| **Claude Code (`claude`)** | `@anthropic-ai/claude-agent-sdk` 상주 세션 | 로컬 `CLAUDE.md`·훅·스킬·MCP 자동 유지, 양방향 도구 승인 및 `AskUserQuestion` 카드, 5시간/주간 공식 할당량, 원클릭 `claude auth login` |
-| **OpenAI Codex (`codex`)** | `codex app-server --stdio` JSONL 상주 세션 | 실행 중 턴 스티어링(steering), 양방향 승인·질문, 멀티 `CODEX_HOME` 프로필 전환, 5시간/주간 공식 한도, 원클릭 `codex login` |
+토큰밴드 하나 못 달아서 답답했던 게 시작이었기 때문에, **아예 앱의 모든 기능을 독립 플러그인**으로 쪼갰습니다.  
+채팅창도, 토큰밴드도, 내장 브라우저도, 터미널도 전부 플러그인입니다.
 
-- **이미지 드래그 앤 드롭 & 썸네일 스트립**: 파인더·스크린샷·클립보드(`⌘V`)에서 이미지를 끌어다 놓으면 입력창 상단에 썸네일로 쌓이고, 클릭 시 라이트박스로 확대 확인할 수 있습니다.
-- **한글 IME 최적화**: macOS 2벌식 한글 조합 중 단일 `Enter` 전송, `@` 실시간 워크스페이스 파일 멘션, `/` 슬래시 명령어·스킬 자동완성을 지원합니다.
+<p align="center">
+  <img src="docs/demos/plugin-philosophy.gif" alt="UI X-Ray 투시와 통창 플러그인 스튜디오에서 토큰밴드 실시간 On/Off" width="100%" />
+</p>
 
-### 2. 2계층 토큰 밴드 & 무한 분할 워크스페이스
-
-<img src="docs/screenshots/token-band.png" alt="반중력 · Claude Code · Codex 3사 통합 전역 토큰 밴드 보드" width="100%" />
-
-- **전역 토큰 밴드 통합 보드 (`⌘⇧U`)**: 반중력(`Gemini` · `Claude·GPT` 풀) · `Claude Code`(5시간/주간/모델별) · `Codex`(5시간/주간) 3사 구독 한도와 균등 페이스선(`│`), 열려 있는 모든 채팅 세션의 실시간 컨텍스트·캐시 적중률, 3사 합산 도구별 `+토큰` 소비 TOP 10을 한 화면에서 비교합니다. 디스크 캐시로 재시작 직후 즉시 복원됩니다.
-- **채팅 하단 1:1 로컬 HUD**: 현재 채팅 탭의 엔진·모델에 맞춰 Gemini 한도 / 반중력 Claude·GPT 한도 / Claude Code 한도 / Codex 한도와 정확한 모델별 컨텍스트 창 크기(`105만` / `20만` / `40만`)를 0 토큰 오버헤드로 표시합니다.
-
-<img src="docs/screenshots/split-webview.png" alt="실시간 토큰 HUD와 내장 웹뷰 분할 화면" width="100%" />
-
-- **재귀 분할 트리 + 드래그 도킹**: 좌우(`⌘D`) · 상하(`⌘⇧D`) 무한 분할, 탭 드래그로 가장자리 분할/이동, 탭 색상·고정·이름 변경 지원.
-- **내장 크로미움 웹뷰 (`⌘T`)**: 채팅 바로 옆에 `localhost:3000` / `:5173` 개발 서버나 문서를 띄우고 원클릭 DevTools 토글.
-- **내장 PTY 터미널 (`⌘⇧T`) & Git Diff**: `xterm.js` 기반 터미널과 실시간 Git 변경사항 뷰어를 분할 패인으로 배치.
-
-### 3. Plugin Studio & UI X-Ray
-
-<img src="docs/screenshots/xray-overlay.png" alt="Plugin Studio와 UI X-Ray 투시 오버레이" width="100%" />
-
-- **Plugin Studio (`⌘⇧P`)**: 코어 커널 상태, 16개 내장 플러그인의 실시간 토글·의존성·점유 슬롯, 그리고 라이브 이벤트 버스 트레이스를 한눈에 확인합니다.
-- **UI X-Ray (`⌘⇧X`)**: 앱 화면 위 어느 영역이 어떤 플러그인·슬롯에 마운트되어 있는지 실시간 투시 오버레이로 확인합니다.
-- **로컬 외부 플러그인 HMR 마운트**: 내 컴퓨터의 플러그인 폴더를 마운트하면 `esbuild` Compile-Before-Swap으로 앱 재시작 없이 핫 리로드됩니다([`examples/sample-focus-timer`](examples/sample-focus-timer) 참고).
-- **런타임 컨텍스트 인스펙터**: 내 PC의 `~/.gemini/config/`, `~/.claude/`, `~/.codex/`에 설치된 스킬·룰·MCP·훅의 토큰 비용을 동적으로 스캔해 표시합니다.
+- **UI X-Ray (`⌘⇧X`)**: 화면의 어느 영역이 어떤 플러그인으로 만들어져 있는지 바로 투시해서 봅니다.
+- **통창 플러그인 스튜디오 (`⌘⇧P`)**: 필요한 기능만 재시작 없이 실시간으로 켜고 끕니다. (위 GIF처럼 토큰밴드 스위치를 끄면 채팅창에서 바로 사라지고, 켜면 바로 살아납니다.)
+- **내 플러그인 직접 만들기**: 폴더 하나 만들어 마운트하면 코드를 고치는 즉시 앱 재시작 없이 바로 반영됩니다. ([샘플 플러그인 보기](examples/sample-focus-timer))
 
 ---
 
-## 빠른 시작
+### 2. 다른 모델 한 앱에 — 반중력 · Claude · Codex
 
-### 사전 요구사항
+모델 바꿀 때마다 앱 껐다 켰다, 터미널 탭 찾아다닐 필요 없습니다.  
+**내 컴퓨터에 이미 깔린 공식 CLI(`agy`, `claude`, `codex`)를 한 앱에 모아** 그대로 씁니다.
 
-- **Node.js 22+** 및 **npm**
-- **macOS** 권장 (Windows/Linux에서도 Electron 실행 가능, 터미널 패인은 `python3` 필요)
-- 사용할 에이전트 CLI 중 **하나 이상** 설치 (모두 설치할 필요는 없습니다):
-  - **Antigravity CLI (`agy`)**: 설치 후 `agy` 또는 앱 내 **CLI 로그인** 버튼으로 로그인
-  - **Claude Code (`claude`)**: `npm install -g @anthropic-ai/claude-code` 후 `claude auth login` (또는 앱 내 로그인)
-  - **OpenAI Codex (`codex`)**: `npm install -g @openai/codex` (또는 macOS ChatGPT/Codex 앱 내장 바이너리 자동 탐색) 후 `codex login`
+<p align="center">
+  <img src="docs/demos/multi-model.gif" alt="반중력 27개 이상 모델·추론 강도 선택과 Claude·Codex 전환 및 3열 동시 비교" width="100%" />
+</p>
 
-### 설치 및 실행
+- 버튼 한 번으로 **반중력(Antigravity) ↔ Claude Code ↔ OpenAI Codex**를 바로 갈아탑니다.
+- Gemini 4 · Claude · GPT 등 **27개 이상의 모델과 추론 강도(낮음~매우 높음)** 를 바로 골라 쓸 수 있습니다.
+- 아예 **반중력 · Claude · Codex를 한 화면에 3열로 나란히 띄워놓고** 동시에 시키고 비교할 수도 있습니다.
+- 별도 API 키 등록 없이, 기존 공식 CLI 로그인과 내 로컬 스킬·규칙·MCP 설정을 그대로 이어받습니다.
+
+---
+
+### 3. 창 분리 기능 — 채팅 · 브라우저 · 터미널을 한 화면에
+
+AI 창 따로, 브라우저 따로, 터미널 따로 띄워놓고 `⌘Tab` 누르며 왔다 갔다 하지 마세요.  
+원하는 대로 화면을 끝없이 쪼개고 붙일 수 있습니다.
+
+<p align="center">
+  <img src="docs/demos/split-workspace.gif" alt="채팅 옆에 내장 브라우저·터미널을 열고 탭을 드래그해 4분할 워크스페이스 만들기" width="100%" />
+</p>
+
+- **좌우(`⌘D`) · 상하(`⌘⇧D`) 무한 분할**: 필요한 만큼 창을 계속 나눕니다.
+- **탭 드래그로 도킹**: 탭을 마우스로 끌어다 다른 창 가장자리에 놓으면 알아서 쪼개져 붙습니다.
+- **내장 브라우저(`⌘T`) & 내장 터미널(`⌘⇧T`)**: 채팅 바로 옆에 `localhost` 미리보기, GitHub, 문서, 터미널을 같이 띄워두고 작업합니다.
+
+---
+
+## 설치 및 실행
+
+### 필요한 것
+
+- **Node.js 22+**
+- 아래 공식 CLI 중 **쓰고 싶은 것 하나 이상** (전부 깔 필요는 없습니다)
+  - **Antigravity (`agy`)**: 설치 후 로그인 (앱 안에서도 원클릭 로그인 가능)
+  - **Claude Code (`claude`)**: `npm install -g @anthropic-ai/claude-code`
+  - **OpenAI Codex (`codex`)**: `npm install -g @openai/codex`
+
+### 실행 (3줄)
 
 ```bash
 git clone https://github.com/moneycode11101-svg/g-agy-ya.git
 cd g-agy-ya
-npm install
-
-# 개발 모드 (Vite HMR + Electron)
-npm run dev
-
-# 프로덕션 빌드 후 실행
-npm start
+npm install && npm start
 ```
+
+> 개발 모드로 수정하면서 띄우려면 `npm run dev`를 쓰면 됩니다.
 
 ---
 
-## 주요 단축키
+## 자주 쓰는 단축키
 
-| 단축키 | 동작 |
+| 단축키 | 하는 일 |
 | :--- | :--- |
-| `⌘N` | 새 채팅 탭 추가 |
-| `⌘D` / `⌘⇧D` | 오른쪽 / 아래로 분할 |
-| `⌘T` | 옆에 내장 웹뷰 분할 열기 |
-| `⌘⇧T` | 옆에 PTY 터미널 분할 열기 |
-| `⌘⇧U` | 전역 토큰 밴드 통합 보드 열기 |
-| `⌘⇧P` | Plugin Studio 열기 |
-| `⌘⇧X` | UI X-Ray 투시 오버레이 토글 |
-| `⌘B` | 왼쪽 워크스페이스 사이드바 토글 |
-| `⌘W` | 현재 탭 닫기 |
-| `Enter` / `⌥Enter` | 메시지 전송(실행 중에는 대기열 추가) / 즉시 끼어들어 전송 |
-| `⌃C` | 응답 생성 즉시 중지 |
+| `⌘N` | 새 채팅 열기 |
+| `⌘D` / `⌘⇧D` | 오른쪽 / 아래로 창 분리 |
+| `⌘T` | 옆에 내장 브라우저 열기 |
+| `⌘⇧T` | 옆에 터미널 열기 |
+| `⌘⇧U` | 3사 통합 토큰 밴드 보드 열기 |
+| `⌘⇧P` | 플러그인 스튜디오 열기 (통창) |
+| `⌘⇧X` | UI X-Ray 투시 켜기 / 끄기 |
+| `⌘B` | 왼쪽 사이드바 열기 / 닫기 |
 
 ---
 
-## 아키텍처 개요
+## 자주 묻는 것
 
-```mermaid
-flowchart TB
-  subgraph Renderer["Renderer (React 19 · Tailwind v4 · Zustand)"]
-    UI["SplitTree · PaneGroupView · SlotOutlet"]
-    Chat["pane-chat · ModelPickerPopover · AttachmentThumbnail"]
-    Studio["plugin-studio · UI X-Ray · RuntimeContextInspector"]
-    HUD["hud-token-bar · sidebar-workspace"]
-  end
-
-  subgraph Bridge["Preload Bridge (sandbox: true · contextIsolation: true)"]
-    K["window.deskKernel (env · rpc · bus · plugins · introspection · files)"]
-  end
-
-  subgraph Main["Electron Main — Zero-Feature Host Kernel"]
-    Kernel["EventBus · RpcRouter · ServiceRegistry · LocalPluginCompiler (esbuild HMR)"]
-    Agy["agent-agy (agy acp --stdio)"]
-    Claude["agent-claude (Claude Agent SDK)"]
-    Codex["agent-codex (codex app-server JSONL)"]
-    Panes["pane-terminal · pane-webview · pane-git-diff"]
-  end
-
-  Renderer <--> Bridge <--> Kernel
-  Kernel --> Agy & Claude & Codex & Panes
-```
-
----
-
-## 프라이버시 & 로컬 우선 설계
-
-- **외부 텔레메트리 0%**: 앱 내부에 PostHog, Sentry, Axiom, 클라우드 중계 서버 등 어떠한 추적·전송 코드도 포함하지 않습니다.
-- **개인 스킬·설정 완전 분리**: 이 저장소에는 어떤 개인 스킬·프롬프트·계정 정보도 포함되지 않습니다. 실행 시 사용자의 로컬 CLI 설정 폴더(`~/.gemini/config`, `~/.claude`, `~/.codex`)만 동적으로 읽어 표시합니다.
-- **샌드박스 격리**: 렌더러와 내장 `<webview>`는 모두 `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`로 격리됩니다.
+- **내 대화나 키가 외부 서버로 가나요?**  
+  아니요. 추적 코드·외부 중계 서버 **0%** 입니다. 내 컴퓨터에 깔린 공식 CLI를 로컬에서 직접 부를 뿐입니다.
+- **CLI 로그인이 풀리면 터미널 켜야 하나요?**  
+  아니요. 앱 안에서 버튼 한 번으로 바로 다시 로그인할 수 있습니다.
+- **Mac 말고도 되나요?**  
+  macOS 기준으로 만들었지만 Electron 앱이라 Windows/Linux에서도 실행할 수 있습니다. (내장 터미널은 `python3` 필요)
 
 ---
 
