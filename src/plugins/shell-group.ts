@@ -1,4 +1,5 @@
 import type { BuiltinPluginPackage } from '../kernel/client';
+import { appUpdaterClientPackage } from './app-updater';
 import { macosSystemShellClientPackage } from './macos-system-shell';
 import { notifyFeedbackClientPackage } from './notify-feedback';
 import { paneGitDiffClientPackage } from './pane-git-diff';
@@ -19,5 +20,6 @@ export const SHELL_CLIENT_PLUGINS: readonly BuiltinPluginPackage[] = [
   themeAppearanceClientPackage,
   notifyFeedbackClientPackage,
   macosSystemShellClientPackage,
+  appUpdaterClientPackage,
   shortcutsPaletteClientPackage,
 ];

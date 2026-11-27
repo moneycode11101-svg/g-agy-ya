@@ -118,6 +118,8 @@ npm install && npm start
 
 ## FAQ
 
+- **How do updates work?**  
+  The built-in `app-updater` plugin quietly checks GitHub on launch and shows an **Update** badge when new patches arrive. One click runs `git pull`, rebuilds, and restarts the app (or points to the latest release for packaged builds). You can toggle it off anytime in Plugin Studio.
 - **Does anything leave my machine?**  
   No. **0% telemetry, 0 cloud relays.** It only talks to the official CLIs running locally on your computer.
 - **What if my CLI login expires?**  

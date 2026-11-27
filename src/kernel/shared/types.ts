@@ -24,6 +24,7 @@ export const BUILTIN_PLUGIN_IDS = {
   NOTIFY_FEEDBACK: 'notify-feedback',
   MACOS_SYSTEM_SHELL: 'macos-system-shell',
   SHORTCUTS_PALETTE: 'shortcuts-palette',
+  APP_UPDATER: 'app-updater',
 } as const;
 
 /** Canonical `pane.widget` anchor IDs unified across Chat, TokenBar, Runtime & Visualizer */
