@@ -76,6 +76,8 @@ No more `⌘Tab` ping-pong between your AI chat, browser preview, and terminal.
 - **Split endlessly** horizontally (`⌘D`) or vertically (`⌘⇧D`).
 - **Drag any tab to any edge** to dock and rearrange panes on the fly.
 - **Built-in Browser (`⌘T`) & Terminal (`⌘⇧T`)**: Keep `localhost`, docs, GitHub, and a live shell right next to your agent.
+- **Inline Chat Images & Lightbox**: Local and remote markdown images render directly inside chat bubbles—click any image (or image link) for a fullscreen lightbox with Finder reveal, or click local `file://` links to open them right away.
+- **One-Click In-App Updates**: Automatically checks GitHub for new patches, surfaces an **Update** badge in the top bar, and handles `git pull`, rebuild, and relaunch in one click.
 
 ---
 
