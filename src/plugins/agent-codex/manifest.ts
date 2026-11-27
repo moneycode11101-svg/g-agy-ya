@@ -45,6 +45,7 @@ export const AGENT_CODEX_MANIFEST: PluginManifest = {
         { value: 'high', label: '높음' },
         { value: 'xhigh', label: '매우 높음' },
         { value: 'max', label: '최대' },
+        { value: 'ultra', label: '울트라' },
       ],
       keywords: ['effort', '추론', '강도', 'codex', 'xhigh'],
     },

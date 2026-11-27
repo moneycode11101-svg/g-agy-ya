@@ -13,13 +13,39 @@ export type ClaudeModelOption = AgentModelOption;
 export type ClaudeRuntimeInfo = AgentRuntimeInfo;
 
 export const FALLBACK_CLAUDE_MODELS: ClaudeModelOption[] = [
-  { value: 'default', label: '기본 모델 (Claude Code)' },
-  { value: 'opus', label: 'Claude Opus (최신)', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'high' },
-  { value: 'sonnet', label: 'Claude Sonnet (최신)', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'high' },
-  { value: 'haiku', label: 'Claude Haiku (최신)', supportedEfforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
-  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6', supportedEfforts: ['low', 'medium', 'high', 'max'], defaultEffort: 'high' },
-  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', supportedEfforts: ['low', 'medium', 'high', 'max'], defaultEffort: 'high' },
-  { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', supportedEfforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+  {
+    value: 'default',
+    label: '기본 모델 (Claude Code)',
+    badge: { label: '추천', tone: 'new' },
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+  },
+  {
+    value: 'opus',
+    label: 'Claude Opus (최신)',
+    badge: { label: '최신', tone: 'new' },
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+  },
+  {
+    value: 'fable',
+    label: 'Claude Fable (최신)',
+    badge: { label: '최신', tone: 'new' },
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+  },
+  {
+    value: 'sonnet',
+    label: 'Claude Sonnet (최신)',
+    badge: { label: '최신', tone: 'new' },
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+  },
+  {
+    value: 'haiku',
+    label: 'Claude Haiku (최신)',
+    badge: { label: '최신', tone: 'new' },
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+  },
+  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6', supportedEfforts: ['low', 'medium', 'high', 'max'] },
+  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', supportedEfforts: ['low', 'medium', 'high', 'max'] },
+  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
 ];
 
 export const CLAUDE_RPC = {
@@ -42,5 +68,6 @@ export const CLAUDE_RPC = {
 export const CLAUDE_BUS = {
   EVENT: 'agent-claude:event',
   QUOTA_UPDATED: 'agent-claude:quota.updated',
+  MODELS_UPDATED: 'agent-claude:models.updated',
   ASSETS_UPDATED: 'agent-claude:assets.updated',
 } as const;

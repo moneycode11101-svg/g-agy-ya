@@ -98,6 +98,7 @@ export interface ChatSessionStoreState {
   setAdapterAvailable: (available: boolean) => void;
   setAvailableAdapters: (adapters: ClientAgentAdapterDescriptor[]) => void;
   setAccountQuota: (snap: AccountQuotaSnapshot, adapterId?: string) => void;
+  setAvailableModels: (models: AgentModelOption[], adapterId?: string) => void;
   refreshAccountQuota: (force?: boolean, adapterId?: string) => Promise<void>;
   refreshAllAccountQuotas: (force?: boolean) => Promise<void>;
   refreshModels: (force?: boolean, adapterId?: string) => Promise<void>;
@@ -252,16 +253,21 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
     await Promise.allSettled(ids.map((id) => get().refreshAccountQuota(force, id)));
   },
 
+  setAvailableModels: (models, adapterId = 'agent-agy') => {
+    if (!Array.isArray(models) || models.length === 0) return;
+    set((prev) => ({
+      availableModelsByAdapter: { ...prev.availableModelsByAdapter, [adapterId]: models },
+      ...(adapterId === 'agent-agy' ? { availableModels: models } : {}),
+    }));
+  },
+
   refreshModels: async (force = false, adapterId = 'agent-agy') => {
     const cbs = get().callbacks;
     if (!cbs) return;
     try {
       const models = await cbs.invokeRpc<AgentModelOption[]>(agentRpc(adapterId, 'models.list'), { force });
       if (Array.isArray(models) && models.length > 0) {
-        set((prev) => ({
-          availableModelsByAdapter: { ...prev.availableModelsByAdapter, [adapterId]: models },
-          ...(adapterId === 'agent-agy' ? { availableModels: models } : {}),
-        }));
+        get().setAvailableModels(models, adapterId);
       }
     } catch {
       // keep fallback models

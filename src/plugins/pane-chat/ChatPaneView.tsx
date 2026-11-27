@@ -73,6 +73,7 @@ const EFFORT_LABELS: Record<string, string> = {
   high: '높음',
   xhigh: '매우 높음',
   max: '최대',
+  ultra: '울트라',
 };
 
 const MODE_OPTIONS: Array<{ value: ChatMode; label: string; desc: string }> = [
@@ -445,13 +446,26 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   };
 
   // Independent `warnOnCacheReset` — works even when `hud-token-bar` plugin is OFF (mandatory fix c)
-  const requestSwitchModel = (modelValue: string) => {
+  const requestSwitchModel = (modelValue: string, effort?: string) => {
     setModelMenuOpen(false);
-    if (modelValue === state.model && (!state.effort || state.effort === 'default')) return;
-    const patch: Partial<ChatTabState> = { model: modelValue, effort: 'default' };
+    const nextEffort = effort ?? 'default';
+    const curEffort = state.effort || 'default';
+    if (modelValue === state.model && nextEffort === curEffort) return;
+    const patch: Partial<ChatTabState> = { model: modelValue, effort: nextEffort };
     const ctxTokens = metrics?.currentContext ?? 0;
-    if (cfg.warnOnCacheReset !== false && ctxTokens > 5000) {
-      setPendingSwitch({ patch, label: formatModelDisplayLabel(modelValue, availableModels) });
+    const modelChanged = modelValue !== state.model;
+    if (cfg.warnOnCacheReset !== false && modelChanged && ctxTokens > 5000) {
+      const baseLabel = formatModelDisplayLabel(
+        modelValue,
+        availableModels,
+        currentAdapter?.shortLabel ||
+          (adapterId === 'agent-claude' ? 'Claude' : adapterId === 'agent-codex' ? 'Codex' : 'agy')
+      );
+      const label =
+        nextEffort !== 'default'
+          ? `${baseLabel} · ${EFFORT_LABELS[nextEffort] || nextEffort}`
+          : baseLabel;
+      setPendingSwitch({ patch, label });
     } else {
       updateState(patch);
     }
@@ -1869,6 +1883,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     availableModelsCount={availableModels.length}
                     modelFamilies={modelFamilies}
                     currentModel={state.model}
+                    currentEffort={state.effort}
                     refreshingModels={refreshingModels}
                     onRefreshModels={() => void handleRefreshModels()}
                     onSelectModel={requestSwitchModel}

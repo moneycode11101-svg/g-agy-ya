@@ -14,6 +14,7 @@ import {
   AGENT_BUS,
   agentRpc,
   type AgentLoadedSession,
+  type AgentModelsBusPayload,
   type AgentQuotaBusPayload,
   type ClientAgentAdapterDescriptor,
 } from '../../shared/agentProtocol';
@@ -190,6 +191,11 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
     ctx.bus.subscribe<AgentQuotaBusPayload>(AGENT_BUS.QUOTA_UPDATED, (env) => {
       if (env.payload?.snapshot) {
         useChatSessionStore.getState().setAccountQuota(env.payload.snapshot, env.payload.adapterId);
+      }
+    });
+    ctx.bus.subscribe<AgentModelsBusPayload>(AGENT_BUS.MODELS_UPDATED, (env) => {
+      if (env.payload?.adapterId && Array.isArray(env.payload.models) && env.payload.models.length > 0) {
+        useChatSessionStore.getState().setAvailableModels(env.payload.models, env.payload.adapterId);
       }
     });
 

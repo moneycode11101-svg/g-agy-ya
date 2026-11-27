@@ -31,6 +31,9 @@ export interface AgentCapabilities {
 export interface AgentModelOption {
   readonly value: string;
   readonly label: string;
+  readonly resolvedModel?: string;
+  readonly description?: string;
+  readonly badge?: { readonly label: string; readonly tone: 'new' | 'warn' | 'muted' };
   readonly supportedEfforts?: readonly string[];
   readonly defaultEffort?: string;
 }
@@ -123,12 +126,18 @@ export function agentRpc(adapterId: string, method: AgentRpcMethod): string {
 export const AGENT_BUS = {
   EVENT: 'agent:event',
   QUOTA_UPDATED: 'agent:quota.updated',
+  MODELS_UPDATED: 'agent:models.updated',
   ASSETS_UPDATED: 'agent:assets.updated',
 } as const;
 
 export interface AgentQuotaBusPayload {
   readonly adapterId: string;
   readonly snapshot: AccountQuotaSnapshot;
+}
+
+export interface AgentModelsBusPayload {
+  readonly adapterId: string;
+  readonly models: AgentModelOption[];
 }
 
 export type AgentBusEventPayload = AgentEvent;

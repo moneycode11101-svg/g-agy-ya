@@ -22,13 +22,16 @@ import {
 } from '../../../src/shared/agentProtocol';
 import { FALLBACK_CLAUDE_MODELS, type ClaudePluginConfig } from '../../../src/plugins/agent-claude/types';
 import { TextDeltaCoalescer } from '../agent-core/textDeltaCoalescer';
+import { loadCachedAdapterModels, saveCachedAdapterModels } from '../shared/modelCache';
 import {
   buildClaudeSpawnEnv,
   detectClaudeCliVersion,
+  hasManagedMcpJson,
   loadClaudeAgentSdk,
   resolveClaudeBinary,
   suppressClaudeShadowedWarning,
 } from './env';
+import { normalizeClaudeSdkModels } from './models';
 import type { ClaudeQuotaService } from './quota';
 
 const ADAPTER_ID = 'agent-claude';
@@ -123,7 +126,17 @@ function formatStructuredToolResult(toolUseResult: unknown, content: unknown): s
 function inferContextWindow(model: string, reported?: Map<string, number>): number {
   if (reported && reported.has(model)) return reported.get(model)!;
   const m = model.toLowerCase();
-  if (m.includes('[1m]') || m.includes('1m') || m.includes('opus-5') || m.includes('sonnet-5') || m.includes('opus-4-6') || m.includes('sonnet-4-6')) {
+  if (
+    m.includes('[1m]') ||
+    m.includes('1m') ||
+    m.includes('fable') ||
+    m.includes('opus-5') ||
+    m.includes('sonnet-5') ||
+    m.includes('opus-4-8') ||
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-6') ||
+    m.includes('sonnet-4-6')
+  ) {
     return 1_000_000;
   }
   return 200_000;
@@ -211,6 +224,7 @@ interface ClaudeWorkerSession {
   } | null;
   reportedContextWindows: Map<string, number>;
   model: string;
+  effort: string;
   invocations: number;
   sessionCumulative: number;
   totalInputForCache: number;
@@ -233,6 +247,7 @@ export class ClaudePluginBridge {
   private readonly getConfig: () => Readonly<ClaudePluginConfig>;
   private readonly quota: ClaudeQuotaService;
   private readonly emit: (ev: AgentEvent) => void;
+  private readonly onModelsUpdated?: (models: AgentModelOption[]) => void;
   private readonly workers = new Map<string, ClaudeWorkerSession>();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly pendingQuestions = new Map<string, PendingQuestion>();
@@ -240,7 +255,8 @@ export class ClaudePluginBridge {
   private readonly thinkingCoalescer: TextDeltaCoalescer;
   private nextGen = 1;
   private cachedVersion: string | null = null;
-  private cachedModels: { items: AgentModelOption[]; fetchedAt: number } | null = null;
+  private cachedModels: { items: AgentModelOption[]; fetchedAt: number; source: 'live' | 'disk' } | null = null;
+  private inflightModelsProbe: Promise<AgentModelOption[]> | null = null;
   private activeLoginProc: ChildProcess | null = null;
   private activeLoginPromise: Promise<{ ok: boolean; error?: string }> | null = null;
 
@@ -248,10 +264,17 @@ export class ClaudePluginBridge {
     getConfig: () => Readonly<ClaudePluginConfig>;
     quota: ClaudeQuotaService;
     emit: (ev: AgentEvent) => void;
+    onModelsUpdated?: (models: AgentModelOption[]) => void;
   }) {
     this.getConfig = opts.getConfig;
     this.quota = opts.quota;
     this.emit = opts.emit;
+    this.onModelsUpdated = opts.onModelsUpdated;
+
+    const persistedModels = loadCachedAdapterModels(ADAPTER_ID);
+    if (persistedModels && persistedModels.length > 0) {
+      this.cachedModels = { items: persistedModels, fetchedAt: 0, source: 'disk' };
+    }
 
     this.textCoalescer = new TextDeltaCoalescer({
       flushIntervalMs: 50,
@@ -378,12 +401,130 @@ export class ClaudePluginBridge {
     return true;
   }
 
+  applyDiscoveredModels(models: AgentModelOption[]): void {
+    if (!Array.isArray(models) || models.length === 0) return;
+    this.cachedModels = { items: models, fetchedAt: Date.now(), source: 'live' };
+    saveCachedAdapterModels(ADAPTER_ID, models);
+    try {
+      this.onModelsUpdated?.(models);
+    } catch {
+      // isolate listener error
+    }
+  }
+
   async listModels(force = false): Promise<AgentModelOption[]> {
-    if (!force && this.cachedModels && Date.now() - this.cachedModels.fetchedAt < 300_000) {
+    if (
+      !force &&
+      this.cachedModels?.source === 'live' &&
+      Date.now() - this.cachedModels.fetchedAt < 300_000
+    ) {
       return this.cachedModels.items;
     }
-    this.cachedModels = { items: FALLBACK_CLAUDE_MODELS, fetchedAt: Date.now() };
-    return FALLBACK_CLAUDE_MODELS;
+
+    if (!force) {
+      // 1. Reuse already-running quota SDK probe if in flight (zero extra CLI spawn)
+      const inflightQuotaModels = this.quota.getInflightModelsPromise();
+      if (inflightQuotaModels) {
+        try {
+          const discovered = await inflightQuotaModels;
+          if (discovered.length > 0) {
+            this.applyDiscoveredModels(discovered);
+            return discovered;
+          }
+        } catch {
+          // fall through
+        }
+      }
+
+      // 2. Reuse any active live worker session via `supportedModels()` (instant, zero spawn)
+      for (const w of this.workers.values()) {
+        if (w.closed || typeof w.queryRuntime?.supportedModels !== 'function') continue;
+        try {
+          const raw = await Promise.race([
+            w.queryRuntime.supportedModels(),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000)),
+          ]);
+          const normalized = normalizeClaudeSdkModels(raw);
+          if (normalized.length > 0) {
+            this.applyDiscoveredModels(normalized);
+            return normalized;
+          }
+        } catch {
+          // try next worker or probe
+        }
+      }
+    }
+
+    // 3. Dedicated zero-API-call SDK init probe (deduplicated)
+    if (!this.inflightModelsProbe) {
+      this.inflightModelsProbe = this.runSdkModelsProbe().finally(() => {
+        this.inflightModelsProbe = null;
+      });
+    }
+
+    const probed = await this.inflightModelsProbe;
+    if (probed.length > 0) {
+      this.applyDiscoveredModels(probed);
+      return probed;
+    }
+
+    return this.cachedModels?.items || FALLBACK_CLAUDE_MODELS;
+  }
+
+  private async runSdkModelsProbe(): Promise<AgentModelOption[]> {
+    suppressClaudeShadowedWarning();
+    const cfg = this.getConfig();
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), 18_000);
+
+    async function* idlePrompt() {
+      await new Promise<void>((resolve) => {
+        if (abortController.signal.aborted) {
+          resolve();
+          return;
+        }
+        abortController.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+    }
+
+    const strictMcp = !hasManagedMcpJson();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let q: any = null;
+    try {
+      const sdk = await loadClaudeAgentSdk();
+      q = sdk.query({
+        prompt: idlePrompt(),
+        options: {
+          cwd: os.homedir(),
+          pathToClaudeCodeExecutable: resolveClaudeBinary(cfg.cliPath),
+          env: buildClaudeSpawnEnv({ configDir: cfg.configDir, isProbe: true }),
+          persistSession: false,
+          settingSources: ['user', 'project', 'local'],
+          settings: { disableAllHooks: true },
+          allowedTools: [],
+          mcpServers: {},
+          ...(strictMcp ? { strictMcpConfig: true } : {}),
+          abortController,
+        },
+      });
+
+      const init = (await q.initializationResult()) as { models?: unknown } | undefined;
+      let rawModels = init?.models;
+      if (!Array.isArray(rawModels) || rawModels.length === 0) {
+        rawModels = await q.supportedModels?.().catch(() => []);
+      }
+      return normalizeClaudeSdkModels(rawModels);
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timeout);
+      abortController.abort();
+      try {
+        q?.close?.();
+      } catch {
+        // ignore close errors
+      }
+    }
   }
 
   respondPermission(_tabSessionId: string, requestId: string, optionId: string | null): boolean {
@@ -455,12 +596,17 @@ export class ClaudePluginBridge {
           });
           worker.currentPermissionMode = worker.openedPermissionMode;
         }
-        if (effectiveModel && effectiveModel !== 'default' && effectiveModel !== worker.model) {
-          await worker.queryRuntime?.setModel?.(effectiveModel).catch(() => {});
+        if (effectiveModel !== worker.model) {
+          await worker.queryRuntime
+            ?.setModel?.(effectiveModel === 'default' ? undefined : effectiveModel)
+            .catch(() => {});
           worker.model = effectiveModel;
         }
-        if (effectiveEffort && effectiveEffort !== 'default') {
-          await worker.queryRuntime?.applyFlagSettings?.({ effortLevel: effectiveEffort }).catch(() => {});
+        if (effectiveEffort !== worker.effort) {
+          await worker.queryRuntime
+            ?.applyFlagSettings?.({ effortLevel: effectiveEffort === 'default' ? null : effectiveEffort })
+            .catch(() => {});
+          worker.effort = effectiveEffort;
         }
       } catch {
         // fallback to fresh worker if live mutation fails
@@ -575,6 +721,7 @@ export class ClaudePluginBridge {
       streamUsage: null,
       reportedContextWindows: new Map(),
       model: opts.model,
+      effort: opts.effort,
       invocations: 0,
       sessionCumulative: 0,
       totalInputForCache: 0,
@@ -641,11 +788,17 @@ export class ClaudePluginBridge {
       // Consume stream in background loop (never call raw generator.return())
       void this.consumeWorkerStream(worker, q, stderrLines);
 
-      // Wait for initializationResult (up to 30s)
-      await Promise.race([
+      // Wait for initializationResult (up to 30s) and harvest live models list
+      const init = (await Promise.race([
         q.initializationResult?.(),
         new Promise((_, reject) => setTimeout(() => reject(new Error('Claude Code 초기화 시간 초과(30s)')), 30_000)),
-      ]);
+      ])) as { models?: unknown } | undefined;
+      if (init?.models) {
+        const discovered = normalizeClaudeSdkModels(init.models);
+        if (discovered.length > 0) {
+          this.applyDiscoveredModels(discovered);
+        }
+      }
 
       return { ok: true, worker };
     } catch (err) {

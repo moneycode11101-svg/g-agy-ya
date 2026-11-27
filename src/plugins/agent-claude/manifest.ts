@@ -22,13 +22,13 @@ export const AGENT_CLAUDE_MANIFEST: PluginManifest = {
     {
       key: 'defaultModel',
       label: '기본 모델',
-      description: '새 Claude 채팅 탭에서 사용할 기본 모델 또는 별칭(default, opus, sonnet, haiku).',
+      description: '새 Claude 채팅 탭에서 사용할 기본 모델 또는 별칭(default, fable, opus, sonnet, haiku).',
       group: 'Claude 실행',
       type: 'string',
       widget: 'text',
       defaultValue: 'default',
-      placeholder: 'default (또는 opus / sonnet / haiku)',
-      keywords: ['claude', '클로드', '모델', 'opus', 'sonnet'],
+      placeholder: 'default (또는 fable / opus / sonnet / haiku)',
+      keywords: ['claude', '클로드', '모델', 'fable', '페이블', 'opus', 'sonnet'],
     },
     {
       key: 'defaultEffort',

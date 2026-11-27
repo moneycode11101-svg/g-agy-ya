@@ -1,4 +1,5 @@
 import os from 'node:os';
+import type { AgentModelOption } from '../../../src/shared/agentProtocol';
 import type { AccountQuotaSnapshot, QuotaBucket } from '../../../src/shared/types';
 import { loadCachedAdapterQuota, saveCachedAdapterQuota } from '../shared/quotaCache';
 import {
@@ -8,6 +9,7 @@ import {
   resolveClaudeBinary,
   suppressClaudeShadowedWarning,
 } from './env';
+import { normalizeClaudeSdkModels } from './models';
 
 interface RawRateLimitWindow {
   utilization?: number | null;
@@ -69,19 +71,31 @@ function makeBucket(
 export class ClaudeQuotaService {
   private snapshot: AccountQuotaSnapshot = { adapterId: 'agent-claude', buckets: [], updatedAt: null };
   private inflight: Promise<AccountQuotaSnapshot> | null = null;
+  private inflightInitModels: Promise<AgentModelOption[]> | null = null;
   private lastFetchAt = 0;
   private listeners = new Set<(snap: AccountQuotaSnapshot) => void>();
   private primaryScopedModelName: string | null = null;
   private readonly getConfigDir: () => string;
   private readonly getCliPath: () => string;
+  private readonly onModelsDiscovered?: (models: AgentModelOption[]) => void;
 
-  constructor(opts: { getConfigDir: () => string; getCliPath: () => string }) {
+  constructor(opts: {
+    getConfigDir: () => string;
+    getCliPath: () => string;
+    onModelsDiscovered?: (models: AgentModelOption[]) => void;
+  }) {
     this.getConfigDir = opts.getConfigDir;
     this.getCliPath = opts.getCliPath;
+    this.onModelsDiscovered = opts.onModelsDiscovered;
     const persisted = loadCachedAdapterQuota('agent-claude');
     if (persisted && persisted.snapshot.buckets.length > 0) {
       this.snapshot = persisted.snapshot;
     }
+  }
+
+  /** Allows `ClaudePluginBridge.listModels` to piggyback on an already-running SDK init probe. */
+  getInflightModelsPromise(): Promise<AgentModelOption[]> | null {
+    return this.inflightInitModels;
   }
 
   getCachedSnapshot(): AccountQuotaSnapshot {
@@ -192,6 +206,18 @@ export class ClaudeQuotaService {
     }
 
     const strictMcp = !hasManagedMcpJson();
+    let resolveInitModels: ((models: AgentModelOption[]) => void) | null = null;
+    this.inflightInitModels = new Promise<AgentModelOption[]>((resolve) => {
+      resolveInitModels = resolve;
+    });
+    const finishInitModels = (models: AgentModelOption[]) => {
+      if (resolveInitModels) {
+        const fn = resolveInitModels;
+        resolveInitModels = null;
+        fn(models);
+      }
+    };
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let q: any = null;
     try {
@@ -211,7 +237,21 @@ export class ClaudeQuotaService {
         },
       });
 
-      await q.initializationResult();
+      const init = (await q.initializationResult()) as { models?: unknown } | undefined;
+      let rawModels = init?.models;
+      if (!Array.isArray(rawModels) || rawModels.length === 0) {
+        rawModels = await q.supportedModels?.().catch(() => []);
+      }
+      const discoveredModels = normalizeClaudeSdkModels(rawModels);
+      finishInitModels(discoveredModels);
+      if (discoveredModels.length > 0) {
+        try {
+          this.onModelsDiscovered?.(discoveredModels);
+        } catch {
+          // isolate callback error
+        }
+      }
+
       const usageFn = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
       if (typeof usageFn !== 'function') {
         return {
@@ -259,6 +299,8 @@ export class ClaudeQuotaService {
           : {}),
       };
     } finally {
+      finishInitModels([]);
+      this.inflightInitModels = null;
       clearTimeout(timeout);
       abortController.abort();
       try {

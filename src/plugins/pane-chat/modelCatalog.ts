@@ -1,7 +1,9 @@
-import type { AgyModelOption } from '../agent-agy/types';
+import type { AgentModelOption } from '../../shared/agentProtocol';
 
 export interface ModelVariant {
+  readonly key: string;
   readonly value: string;
+  readonly effort?: string;
   readonly rawLabel: string;
   readonly tierKey: string;
   readonly tierLabel: string;
@@ -10,34 +12,42 @@ export interface ModelVariant {
 export interface ModelFamilyGroup {
   readonly id: string;
   readonly name: string;
+  readonly resolvedModel?: string;
+  readonly description?: string;
   readonly variants: ModelVariant[];
   readonly defaultVariantValue: string;
-  readonly badge?: { label: string; tone: 'new' | 'warn' | 'muted' };
+  readonly defaultVariantEffort?: string;
+  readonly badge?: { readonly label: string; readonly tone: 'new' | 'warn' | 'muted' };
+  readonly isEffortSubmenu?: boolean;
 }
 
-const TIER_KO: Record<string, string> = {
+export const TIER_KO: Record<string, string> = {
+  default: '기본',
   low: '낮음',
   medium: '보통',
   high: '높음',
   xhigh: '매우 높음',
   max: '최대',
+  ultra: '울트라',
   neon: 'Neon',
   carbon: 'Carbon',
   argon: 'Argon',
 };
 
 const TIER_ORDER: Record<string, number> = {
+  default: 0,
   low: 1,
   medium: 2,
   high: 3,
   xhigh: 4,
   max: 5,
+  ultra: 6,
   neon: 1,
   carbon: 2,
   argon: 3,
 };
 
-const FAMILY_ORDER: Record<string, number> = {
+const AGY_FAMILY_ORDER: Record<string, number> = {
   'gemini-4-neon': 10,
   'gemini-4-carbon': 20,
   'gemini-4-argon': 30,
@@ -49,7 +59,7 @@ const FAMILY_ORDER: Record<string, number> = {
   'gpt-oss-120b': 90,
 };
 
-const FAMILY_BADGES: Record<string, { label: string; tone: 'new' | 'warn' | 'muted' }> = {
+const AGY_FAMILY_BADGES: Record<string, { label: string; tone: 'new' | 'warn' | 'muted' }> = {
   'gemini-4-neon': { label: '최신', tone: 'new' },
   'gemini-4-carbon': { label: '최신', tone: 'new' },
   'gemini-4-argon': { label: '곧 지원 중단', tone: 'warn' },
@@ -60,7 +70,7 @@ const FAMILY_BADGES: Record<string, { label: string; tone: 'new' | 'warn' | 'mut
   'claude-sonnet-5-5': { label: '최신', tone: 'new' },
 };
 
-function parseModelOption(opt: AgyModelOption): {
+function parseModelOption(opt: AgentModelOption): {
   familyId: string;
   familyName: string;
   tierKey: string;
@@ -105,7 +115,7 @@ function parseModelOption(opt: AgyModelOption): {
     };
   }
 
-  // Fallback for any future/custom model naming
+  // Fallback for embedded-tier model ids
   const suffix = val.match(/^(.+)-(low|medium|high|xhigh|max)$/i);
   if (suffix) {
     const tierKey = suffix[2].toLowerCase();
@@ -126,65 +136,164 @@ function parseModelOption(opt: AgyModelOption): {
 }
 
 /**
- * Groups flat `agy models` list (27+ entries) into clean Antigravity-style families
- * with per-family reasoning effort / variant choices.
+ * Groups flat `agy models` entries into families AND builds effort submenus for
+ * Claude / Codex models that expose `supportedEfforts`, while preserving each
+ * provider's official curated ordering.
  */
-export function groupModelsIntoFamilies(models: readonly AgyModelOption[]): ModelFamilyGroup[] {
-  const byFamily = new Map<string, { name: string; variants: ModelVariant[] }>();
+export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): ModelFamilyGroup[] {
+  const isAgyCatalog = models.some(
+    (m) => m.value.startsWith('gemini-') || m.value.startsWith('gpt-oss')
+  );
 
-  for (const opt of models) {
-    if (!opt.value || opt.value === 'default') continue;
+  const byFamily = new Map<
+    string,
+    {
+      name: string;
+      resolvedModel?: string;
+      description?: string;
+      badge?: { readonly label: string; readonly tone: 'new' | 'warn' | 'muted' };
+      variants: ModelVariant[];
+      isEffortSubmenu: boolean;
+      firstSeenIndex: number;
+    }
+  >();
+
+  models.forEach((opt, idx) => {
+    if (!opt.value) return;
+
+    // Models with separate `supportedEfforts` (Claude Code / Codex)
+    if (Array.isArray(opt.supportedEfforts) && opt.supportedEfforts.length > 0) {
+      const seenEfforts = new Set<string>();
+      const effortItems: ModelVariant[] = [
+        {
+          key: `${opt.value}::default`,
+          value: opt.value,
+          effort: 'default',
+          rawLabel: opt.label,
+          tierKey: 'default',
+          tierLabel: opt.defaultEffort
+            ? `기본 (${TIER_KO[opt.defaultEffort.toLowerCase()] || opt.defaultEffort})`
+            : '기본',
+        },
+      ];
+      for (const rawEff of opt.supportedEfforts) {
+        const eff = String(rawEff || '').trim().toLowerCase();
+        if (!eff || eff === 'default' || seenEfforts.has(eff)) continue;
+        seenEfforts.add(eff);
+        effortItems.push({
+          key: `${opt.value}::${eff}`,
+          value: opt.value,
+          effort: eff,
+          rawLabel: `${opt.label} (${TIER_KO[eff] || eff})`,
+          tierKey: eff,
+          tierLabel: TIER_KO[eff] || eff,
+        });
+      }
+
+      byFamily.set(opt.value, {
+        name: opt.label,
+        resolvedModel: opt.resolvedModel,
+        description: opt.description,
+        badge: opt.badge,
+        variants: effortItems,
+        isEffortSubmenu: effortItems.length > 1,
+        firstSeenIndex: idx,
+      });
+      return;
+    }
+
     const p = parseModelOption(opt);
     let bucket = byFamily.get(p.familyId);
     if (!bucket) {
-      bucket = { name: p.familyName, variants: [] };
+      bucket = {
+        name: p.familyName,
+        resolvedModel: opt.resolvedModel,
+        description: opt.description,
+        badge: opt.badge ?? (isAgyCatalog ? AGY_FAMILY_BADGES[p.familyId] : undefined),
+        variants: [],
+        isEffortSubmenu: false,
+        firstSeenIndex: idx,
+      };
       byFamily.set(p.familyId, bucket);
     }
     if (!bucket.variants.some((v) => v.value === opt.value)) {
       bucket.variants.push({
+        key: opt.value,
         value: opt.value,
         rawLabel: opt.label,
         tierKey: p.tierKey,
         tierLabel: p.tierLabel,
       });
     }
-  }
+  });
 
-  const groups: ModelFamilyGroup[] = [];
+  const groups: Array<{ group: ModelFamilyGroup; firstSeenIndex: number }> = [];
   for (const [id, bucket] of byFamily.entries()) {
     const sorted = [...bucket.variants].sort(
       (a, b) => (TIER_ORDER[a.tierKey] ?? 99) - (TIER_ORDER[b.tierKey] ?? 99)
     );
-    // Prefer xhigh/high/medium/neon as sensible click default for the family
-    const preferred =
-      sorted.find((v) => v.tierKey === 'xhigh') ||
-      sorted.find((v) => v.tierKey === 'high') ||
-      sorted.find((v) => v.tierKey === 'medium') ||
-      sorted.find((v) => v.tierKey === 'neon') ||
-      sorted[0];
+
+    let defaultVariantValue = sorted[0]?.value || id;
+    let defaultVariantEffort: string | undefined;
+
+    if (bucket.isEffortSubmenu) {
+      defaultVariantValue = id;
+      defaultVariantEffort = 'default';
+    } else {
+      // Prefer xhigh/high/medium/neon as sensible click default for embedded-tier `agy` families
+      const preferred =
+        sorted.find((v) => v.tierKey === 'xhigh') ||
+        sorted.find((v) => v.tierKey === 'high') ||
+        sorted.find((v) => v.tierKey === 'medium') ||
+        sorted.find((v) => v.tierKey === 'neon') ||
+        sorted[0];
+      defaultVariantValue = preferred?.value || sorted[0]?.value || id;
+      defaultVariantEffort = preferred?.effort;
+    }
 
     groups.push({
-      id,
-      name: bucket.name,
-      variants: sorted,
-      defaultVariantValue: preferred?.value || sorted[0]?.value || id,
-      badge: FAMILY_BADGES[id],
+      firstSeenIndex: bucket.firstSeenIndex,
+      group: {
+        id,
+        name: bucket.name,
+        resolvedModel: bucket.resolvedModel,
+        description: bucket.description,
+        variants: sorted,
+        defaultVariantValue,
+        defaultVariantEffort,
+        badge: bucket.badge,
+        isEffortSubmenu: bucket.isEffortSubmenu,
+      },
     });
   }
 
-  return groups.sort(
-    (a, b) => (FAMILY_ORDER[a.id] ?? 500) - (FAMILY_ORDER[b.id] ?? 500) || a.name.localeCompare(b.name)
-  );
+  return groups
+    .sort((a, b) => {
+      if (a.group.id === 'default' && b.group.id !== 'default') return -1;
+      if (b.group.id === 'default' && a.group.id !== 'default') return 1;
+      if (isAgyCatalog) {
+        const orderDiff = (AGY_FAMILY_ORDER[a.group.id] ?? 500) - (AGY_FAMILY_ORDER[b.group.id] ?? 500);
+        if (orderDiff !== 0) return orderDiff;
+      }
+      return a.firstSeenIndex - b.firstSeenIndex;
+    })
+    .map((x) => x.group);
 }
 
 /** Formats any model value into a concise Korean label for the composer pill */
 export function formatModelDisplayLabel(
   modelValue: string,
-  models: readonly AgyModelOption[],
+  models: readonly AgentModelOption[],
   adapterShortLabel = 'agy'
 ): string {
-  if (!modelValue || modelValue === 'default') return `기본 모델 (${adapterShortLabel})`;
-  const found = models.find((m) => m.value === modelValue);
+  if (!modelValue || modelValue === 'default') {
+    const def = models.find((m) => m.value === 'default');
+    if (def?.label) return def.label;
+    return `기본 모델 (${adapterShortLabel})`;
+  }
+  const found =
+    models.find((m) => m.value === modelValue) ||
+    models.find((m) => m.value !== 'default' && m.resolvedModel === modelValue);
   if (!found) return modelValue;
   const p = parseModelOption(found);
   if (!p.tierLabel || p.familyName.includes(`(${p.tierLabel})`)) return p.familyName;

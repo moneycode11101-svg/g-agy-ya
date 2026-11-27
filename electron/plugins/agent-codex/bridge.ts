@@ -398,24 +398,40 @@ export class CodexPluginBridge {
             slug?: string;
             displayName?: string;
             name?: string;
-            supportedReasoningEfforts?: Array<string | { effort?: string }>;
+            description?: string;
+            hidden?: boolean;
+            isDefault?: boolean;
+            supportedReasoningEfforts?: Array<string | { effort?: string; reasoningEffort?: string }>;
             defaultReasoningEffort?: string;
           }>;
           nextCursor?: string | null;
         };
 
         for (const m of resp?.data || []) {
+          if (m.hidden === true) continue;
           const val = String(m.slug || m.id || '').trim();
           if (!val || seen.has(val)) continue;
           seen.add(val);
           const efforts = Array.isArray(m.supportedReasoningEfforts)
             ? m.supportedReasoningEfforts
-                .map((e) => (typeof e === 'string' ? e : String(e?.effort || '')))
+                .map((e) => (typeof e === 'string' ? e : String(e?.reasoningEffort || e?.effort || '')))
                 .filter(Boolean)
             : undefined;
+          const displayLabel = String(m.displayName || m.name || val);
+          if (m.isDefault) {
+            collected[0] = {
+              value: 'default',
+              label: `기본 모델 (${displayLabel})`,
+              resolvedModel: val,
+              badge: { label: '추천', tone: 'new' },
+              supportedEfforts: efforts && efforts.length > 0 ? efforts : undefined,
+              defaultEffort: m.defaultReasoningEffort || undefined,
+            };
+          }
           collected.push({
             value: val,
-            label: String(m.displayName || m.name || val),
+            label: displayLabel,
+            description: m.description || undefined,
             supportedEfforts: efforts && efforts.length > 0 ? efforts : undefined,
             defaultEffort: m.defaultReasoningEffort || undefined,
           });
@@ -445,16 +461,29 @@ export class CodexPluginBridge {
       const cachePath = path.join(resolveCodexHome(this.getConfig().codexHome), 'models_cache.json');
       if (!fs.existsSync(cachePath)) return out;
       const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf8')) as {
-        models?: Array<{ slug?: string; display_name?: string; default_reasoning_level?: string }>;
+        models?: Array<{
+          slug?: string;
+          display_name?: string;
+          visibility?: string;
+          default_reasoning_level?: string;
+          supported_reasoning_levels?: Array<string | { effort?: string; reasoningEffort?: string }>;
+        }>;
       };
       const seen = new Set<string>(['default']);
       for (const m of parsed?.models || []) {
+        if (m.visibility === 'hide') continue;
         const slug = String(m.slug || '').trim();
         if (!slug || seen.has(slug)) continue;
         seen.add(slug);
+        const efforts = Array.isArray(m.supported_reasoning_levels)
+          ? m.supported_reasoning_levels
+              .map((e) => (typeof e === 'string' ? e : String(e?.reasoningEffort || e?.effort || '')))
+              .filter(Boolean)
+          : undefined;
         out.push({
           value: slug,
           label: String(m.display_name || slug),
+          supportedEfforts: efforts && efforts.length > 0 ? efforts : undefined,
           defaultEffort: m.default_reasoning_level || undefined,
         });
       }

@@ -18,14 +18,22 @@ import { listRecentClaudeSessions, loadClaudeTranscript } from './transcript';
 
 export const agentClaudeHostPlugin: HostPluginModule<ClaudePluginConfig> = {
   activate(ctx: DeskHostContext<ClaudePluginConfig>) {
+    let bridgeRef: ClaudePluginBridge | null = null;
     const quota = new ClaudeQuotaService({
       getConfigDir: () => String(ctx.config.get().configDir || ''),
       getCliPath: () => String(ctx.config.get().cliPath || ''),
+      onModelsDiscovered: (models) => {
+        bridgeRef?.applyDiscoveredModels(models);
+      },
     });
 
     const bridge = new ClaudePluginBridge({
       getConfig: () => ctx.config.get(),
       quota,
+      onModelsUpdated: (models) => {
+        ctx.bus.publish(CLAUDE_BUS.MODELS_UPDATED, models);
+        ctx.bus.publish(AGENT_BUS.MODELS_UPDATED, { adapterId: 'agent-claude', models });
+      },
       emit: (ev) => {
         ctx.bus.publish(CLAUDE_BUS.EVENT, ev);
         ctx.bus.publish(AGENT_BUS.EVENT, ev);
@@ -34,6 +42,7 @@ export const agentClaudeHostPlugin: HostPluginModule<ClaudePluginConfig> = {
         }
       },
     });
+    bridgeRef = bridge;
 
     const assetProvider = new ClaudeRuntimeAssetProvider({
       getConfigDir: () => String(ctx.config.get().configDir || ''),

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BarChart3, Check, ChevronRight, RefreshCw } from 'lucide-react';
-import type { ModelFamilyGroup } from './modelCatalog';
+import { TIER_KO, type ModelFamilyGroup } from './modelCatalog';
 
 export interface ModelPickerPopoverProps {
   open: boolean;
@@ -10,9 +10,10 @@ export interface ModelPickerPopoverProps {
   availableModelsCount: number;
   modelFamilies: ModelFamilyGroup[];
   currentModel: string;
+  currentEffort?: string;
   refreshingModels: boolean;
   onRefreshModels: () => void;
-  onSelectModel: (modelValue: string) => void;
+  onSelectModel: (modelValue: string, effort?: string) => void;
   onOpenUsage: () => void;
 }
 
@@ -41,15 +42,24 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   availableModelsCount,
   modelFamilies,
   currentModel,
+  currentEffort,
   refreshingModels,
   onRefreshModels,
   onSelectModel,
   onOpenUsage,
 }) => {
-  const activeModelFamily = useMemo(
-    () => modelFamilies.find((f) => f.variants.some((v) => v.value === currentModel)) || null,
-    [modelFamilies, currentModel]
-  );
+  const normalizedEffort = currentEffort || 'default';
+
+  const activeModelFamily = useMemo(() => {
+    const exact = modelFamilies.find((f) => f.variants.some((v) => v.value === currentModel));
+    if (exact) return exact;
+    if (currentModel && currentModel !== 'default') {
+      return (
+        modelFamilies.find((f) => f.id !== 'default' && f.resolvedModel === currentModel) || null
+      );
+    }
+    return null;
+  }, [modelFamilies, currentModel]);
 
   const [activeFamilyId, setActiveFamilyId] = useState<string | null>(null);
   const [mainPos, setMainPos] = useState<MainPos | null>(null);
@@ -90,7 +100,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
     const bottom = Math.max(VIEWPORT_PAD, vh - r.top + 8);
     // Reserve ~104px for header + footer + borders inside the popover
     const availableAbove = Math.max(180, r.top - 8 - VIEWPORT_PAD);
-    const maxListHeight = Math.min(380, Math.max(140, availableAbove - 104));
+    const maxListHeight = Math.min(460, Math.max(160, availableAbove - 104));
     setMainPos({ left, bottom, maxListHeight });
   }, [anchorRef]);
 
@@ -250,14 +260,21 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
           style={{ maxHeight: mainPos.maxListHeight }}
         >
           {modelFamilies.map((fam) => {
-            const activeVariant = fam.variants.find((v) => v.value === currentModel);
-            const isSelectedFamily = Boolean(activeVariant);
+            const isSelectedFamily = activeModelFamily?.id === fam.id;
+            const activeVariant = isSelectedFamily
+              ? fam.isEffortSubmenu
+                ? fam.variants.find((v) => (v.effort || 'default') === normalizedEffort) || fam.variants[0]
+                : fam.variants.find((v) => v.value === currentModel)
+              : undefined;
             const isExpanded = expandedFamily?.id === fam.id;
             const hasMultiple = fam.variants.length > 1;
-            const shownTier =
-              activeVariant?.tierLabel ||
-              fam.variants.find((v) => v.value === fam.defaultVariantValue)?.tierLabel ||
-              '';
+            const shownTier = fam.isEffortSubmenu
+              ? isSelectedFamily && normalizedEffort !== 'default'
+                ? TIER_KO[normalizedEffort] || normalizedEffort
+                : ''
+              : activeVariant?.tierLabel ||
+                fam.variants.find((v) => v.value === fam.defaultVariantValue)?.tierLabel ||
+                '';
 
             return (
               <div key={fam.id} className="space-y-1">
@@ -272,12 +289,13 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                     else setActiveFamilyId(null);
                   }}
                   onClick={() => {
-                    if (!hasMultiple) {
-                      onSelectModel(fam.defaultVariantValue);
+                    if (!hasMultiple || !isInlineMode) {
+                      onSelectModel(fam.defaultVariantValue, fam.defaultVariantEffort);
                     } else {
-                      setActiveFamilyId(fam.id);
+                      setActiveFamilyId(isExpanded ? null : fam.id);
                     }
                   }}
+                  title={fam.description || undefined}
                   className="w-full text-left px-2.5 py-1.5 rounded-xl text-[12.5px] cursor-pointer transition-colors flex items-center justify-between gap-2"
                   style={{
                     background: isExpanded
@@ -325,12 +343,16 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                 {isInlineMode && hasMultiple && isExpanded && (
                   <div className="flex flex-wrap gap-1 px-2.5 pb-1.5">
                     {fam.variants.map((v) => {
-                      const active = currentModel === v.value;
+                      const active =
+                        isSelectedFamily &&
+                        (fam.isEffortSubmenu
+                          ? (v.effort || 'default') === normalizedEffort
+                          : currentModel === v.value);
                       return (
                         <button
-                          key={v.value}
+                          key={v.key}
                           type="button"
-                          onClick={() => onSelectModel(v.value)}
+                          onClick={() => onSelectModel(v.value, v.effort)}
                           className="px-2 py-0.5 rounded-md text-[11px] cursor-pointer transition-colors"
                           style={{
                             background: active ? 'var(--fg)' : 'var(--surface)',
@@ -402,12 +424,17 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
           </div>
 
           {expandedFamily.variants.map((v) => {
-            const active = currentModel === v.value;
+            const isExpandedSelected = activeModelFamily?.id === expandedFamily.id;
+            const active =
+              isExpandedSelected &&
+              (expandedFamily.isEffortSubmenu
+                ? (v.effort || 'default') === normalizedEffort
+                : currentModel === v.value);
             return (
               <button
-                key={v.value}
+                key={v.key}
                 type="button"
-                onClick={() => onSelectModel(v.value)}
+                onClick={() => onSelectModel(v.value, v.effort)}
                 className="w-full text-left px-2.5 py-1.5 rounded-xl text-xs cursor-pointer transition-colors hover:bg-[var(--surface)] flex items-center justify-between gap-2"
                 style={{
                   background: active ? 'var(--surface-active)' : undefined,
