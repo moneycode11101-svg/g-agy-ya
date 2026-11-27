@@ -223,7 +223,7 @@ export function listRecentClaudeSessions(limit = 30, configDir?: string): Sessio
       source: 'cli',
       title: entry.title,
       projectId: entry.cwd || 'claude',
-      projectLabel: entry.cwd ? path.basename(entry.cwd) : 'Claude',
+      projectLabel: entry.cwd ? path.basename(entry.cwd).normalize('NFC') : 'Claude',
       cwd: entry.cwd || undefined,
       updatedAt: entry.updatedAt,
       currentContext: entry.currentContext,

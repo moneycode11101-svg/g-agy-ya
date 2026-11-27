@@ -502,7 +502,7 @@ export class CodexPluginBridge {
           source: 'cli',
           title: safeTruncateUtf16(title, 48),
           projectId: cwd || 'codex',
-          projectLabel: cwd ? path.basename(cwd) : 'Codex',
+          projectLabel: cwd ? path.basename(cwd).normalize('NFC') : 'Codex',
           cwd: cwd || undefined,
           updatedAt: Number.isNaN(ts) ? Date.now() : ts,
           currentContext: 0,

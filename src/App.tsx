@@ -106,12 +106,13 @@ export const App: React.FC = () => {
 
   const focusedGrp = groups[focusedGroupId];
   const focusedTab = focusedGrp?.tabs.find((t) => t.id === focusedGrp.activeTabId) || focusedGrp?.tabs[0];
-  const rawProjectLabel =
+  const rawProjectLabel = (
     typeof focusedTab?.state?.projectLabel === 'string' && focusedTab.state.projectLabel
       ? focusedTab.state.projectLabel
       : typeof focusedTab?.state?.cwd === 'string' && focusedTab.state.cwd
         ? focusedTab.state.cwd.split('/').filter(Boolean).pop() || 'Home'
-        : 'Workspace';
+        : 'Workspace'
+  ).normalize('NFC');
   const titleLabel = focusedTab?.title || 'Workspace';
   const splitCount = Object.keys(groups).length;
   const hasSidebarSections = (sidebarEntries?.length || 0) > 0;

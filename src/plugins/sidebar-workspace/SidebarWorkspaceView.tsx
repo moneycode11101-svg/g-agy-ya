@@ -139,19 +139,20 @@ export const SidebarWorkspaceView: React.FC<SidebarWorkspaceViewProps> = ({ ctx 
     const standalone: SessionSummary[] = [];
 
     for (const dir of projectFolders) {
-      const label = dir.split('/').filter(Boolean).pop() || dir;
+      const label = (dir.split('/').filter(Boolean).pop() || dir).normalize('NFC');
       if (!byProject.has(label)) {
         byProject.set(label, { label, pinnedFolderPath: dir, resolvedCwd: dir, items: [] });
       }
     }
 
     for (const s of recentSessions) {
-      if (s.projectLabel) {
+      const projectLabel = s.projectLabel ? s.projectLabel.normalize('NFC') : '';
+      if (projectLabel) {
         const inferredCwd =
           (s.cwd && s.cwd.startsWith('/') ? s.cwd : undefined) ||
           (s.projectId && s.projectId.startsWith('/') ? s.projectId : undefined);
-        const entry = byProject.get(s.projectLabel) || {
-          label: s.projectLabel,
+        const entry = byProject.get(projectLabel) || {
+          label: projectLabel,
           resolvedCwd: inferredCwd,
           items: [],
         };
@@ -159,7 +160,7 @@ export const SidebarWorkspaceView: React.FC<SidebarWorkspaceViewProps> = ({ ctx 
           entry.resolvedCwd = inferredCwd;
         }
         entry.items.push(s);
-        byProject.set(s.projectLabel, entry);
+        byProject.set(projectLabel, entry);
       } else {
         standalone.push(s);
       }
@@ -176,7 +177,7 @@ export const SidebarWorkspaceView: React.FC<SidebarWorkspaceViewProps> = ({ ctx 
       const dir = await ctx.rpc.invoke<string | null>('sidebar-workspace:pickDirectory');
       if (dir && !projectFolders.includes(dir)) {
         await ctx.config.set({ projectFolders: [...projectFolders, dir] });
-        ctx.ui.toast(`프로젝트 폴더 추가됨: ${dir.split('/').pop() || dir}`, 'info');
+        ctx.ui.toast(`프로젝트 폴더 추가됨: ${(dir.split('/').pop() || dir).normalize('NFC')}`, 'info');
       }
     } catch {
       // ignore
@@ -393,7 +394,7 @@ export const SidebarWorkspaceView: React.FC<SidebarWorkspaceViewProps> = ({ ctx 
                   >
                     <span className="flex items-center gap-2 min-w-0">
                       <Folder size={13} style={{ color: 'var(--muted)' }} className="shrink-0" />
-                      <span className="truncate" title={targetCwd || pg.label}>
+                      <span className="truncate" title={(targetCwd || pg.label).normalize('NFC')}>
                         {pg.label}
                       </span>
                     </span>

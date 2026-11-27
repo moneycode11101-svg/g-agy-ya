@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type {
   AccountQuotaSnapshot,
   ChatBlock,
@@ -39,10 +40,116 @@ interface RawStep {
   media?: Array<{ mime_type?: string; uri?: string }>;
 }
 
-export function formatProjectLabel(projectId: string): string {
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function decodeWorkspaceUri(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  let fsPath = '';
+  if (/^file:/i.test(trimmed)) {
+    try {
+      fsPath = fileURLToPath(trimmed);
+    } catch {
+      try {
+        fsPath = decodeURIComponent(new URL(trimmed).pathname);
+      } catch {
+        return null;
+      }
+    }
+  } else if (path.isAbsolute(trimmed)) {
+    fsPath = trimmed;
+  } else {
+    return null;
+  }
+  const cleaned = fsPath.length > 1 ? fsPath.replace(/[\\/]+$/, '') : fsPath;
+  if (!cleaned) return null;
+  if (process.platform === 'darwin') {
+    const nfc = cleaned.normalize('NFC');
+    if (nfc === cleaned || fs.existsSync(nfc) || !fs.existsSync(cleaned)) {
+      return nfc;
+    }
+  }
+  return cleaned;
+}
+
+export function extractPrimaryWorkspacePath(workspaceUrisRaw?: string | null): string | undefined {
+  const raw = (workspaceUrisRaw || '').trim();
+  if (!raw) return undefined;
+  let candidates: string[] = [];
+  if (raw.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        candidates = parsed.filter((v): v is string => typeof v === 'string');
+      }
+    } catch {
+      return undefined;
+    }
+  } else {
+    candidates = [raw];
+  }
+  for (const uri of candidates) {
+    const p = decodeWorkspaceUri(uri);
+    if (!p) continue;
+    if (p === '/' || /^[A-Za-z]:[\\/]?$/.test(p)) continue;
+    return p;
+  }
+  return undefined;
+}
+
+export function formatProjectLabel(
+  projectId: string,
+  opts?: { cwd?: string; projectName?: string }
+): string {
   if (!projectId || projectId === 'outside-of-project') return '';
   if (projectId === 'default-cli-project') return 'CLI Project';
-  return projectId;
+
+  const named = (opts?.projectName || '').trim().normalize('NFC');
+  if (named && !UUID_RE.test(named)) return named;
+
+  const cwd = (opts?.cwd || '').trim();
+  if (cwd) {
+    const base = path.basename(cwd).trim().normalize('NFC');
+    if (base && base !== '/' && base !== '.' && !UUID_RE.test(base)) {
+      return base;
+    }
+  }
+
+  const normalizedId = projectId.trim().normalize('NFC');
+  if (UUID_RE.test(normalizedId)) return '';
+  return normalizedId;
+}
+
+function loadFtsProjectNames(): Map<string, string> {
+  const map = new Map<string, string>();
+  try {
+    const sql = `
+      SELECT cs.project_id, f.project
+      FROM conversations_fts f
+      JOIN conversation_summaries cs ON cs.conversation_id = f.conversation_id
+      WHERE f.project != ''
+        AND cs.project_id != ''
+        AND cs.project_id != 'outside-of-project'
+        AND cs.project_id != 'default-cli-project'
+      GROUP BY cs.project_id;
+    `;
+    const out = execFileSync('sqlite3', ['-json', APP_DB_PATH, sql], {
+      encoding: 'utf8',
+      timeout: 1500,
+    }).trim();
+    if (!out) return map;
+    const rows = JSON.parse(out) as Array<{ project_id?: string; project?: string }>;
+    for (const r of rows) {
+      const pid = (r.project_id || '').trim();
+      const name = (r.project || '').trim().normalize('NFC');
+      if (pid && name && !UUID_RE.test(name)) {
+        map.set(pid, name);
+      }
+    }
+  } catch {
+    // conversations_fts may be absent or busy; fall back to workspace_uris basename
+  }
+  return map;
 }
 
 export function registerOwnSession(entry: { conversationId: string; title?: string; cwd?: string }): void {
@@ -542,7 +649,7 @@ export function listRecentSessions(limit = 40): SessionSummary[] {
   if (fs.existsSync(APP_DB_PATH)) {
     try {
       const sql = `
-        SELECT conversation_id, title, project_id, last_modified_time
+        SELECT conversation_id, title, project_id, workspace_uris, last_modified_time
         FROM conversation_summaries
         WHERE parent_conversation_id = ''
           AND nesting_depth = 0
@@ -561,20 +668,46 @@ export function listRecentSessions(limit = 40): SessionSummary[] {
             conversation_id: string;
             title: string;
             project_id: string;
+            workspace_uris?: string;
             last_modified_time: string;
           }>)
         : [];
+
+      const hasCustomProject = rows.some((r) => {
+        const pid = (r.project_id || '').trim();
+        return pid !== '' && pid !== 'outside-of-project' && pid !== 'default-cli-project';
+      });
+      const ftsProjectNames = hasCustomProject ? loadFtsProjectNames() : new Map<string, string>();
+      const cwdByProjectId = new Map<string, string>();
+      for (const r of rows) {
+        const pid = (r.project_id || '').trim();
+        if (!pid || pid === 'outside-of-project' || pid === 'default-cli-project' || cwdByProjectId.has(pid)) {
+          continue;
+        }
+        const extracted = extractPrimaryWorkspacePath(r.workspace_uris);
+        if (extracted) cwdByProjectId.set(pid, extracted);
+      }
 
       for (const r of rows) {
         const ts = Date.parse(r.last_modified_time.replace(' ', 'T'));
         const tPath = resolveTranscriptPath(r.conversation_id);
         const tail = tPath ? readTailMetrics(tPath) : { currentContext: 0, model: '' };
+        const pid = (r.project_id || '').trim();
+        const extractedCwd =
+          pid && pid !== 'default-cli-project' && pid !== 'outside-of-project'
+            ? extractPrimaryWorkspacePath(r.workspace_uris) || cwdByProjectId.get(pid)
+            : extractPrimaryWorkspacePath(r.workspace_uris);
+        const projectLabel = formatProjectLabel(pid, {
+          cwd: extractedCwd,
+          projectName: ftsProjectNames.get(pid),
+        });
         byId.set(r.conversation_id, {
           conversationId: r.conversation_id,
           source: 'app',
-          title: r.title,
-          projectId: r.project_id || 'outside-of-project',
-          projectLabel: formatProjectLabel(r.project_id || ''),
+          title: r.title.normalize('NFC'),
+          projectId: pid || 'outside-of-project',
+          projectLabel,
+          cwd: pid === 'default-cli-project' ? undefined : extractedCwd,
           updatedAt: Number.isNaN(ts) ? Date.now() : ts,
           currentContext: tail.currentContext,
           model: tail.model,
@@ -606,11 +739,11 @@ export function listRecentSessions(limit = 40): SessionSummary[] {
               fileMtime = 0;
             }
           }
-          const projectLabel = o.cwd ? path.basename(o.cwd) : '제제이야';
+          const projectLabel = o.cwd ? path.basename(o.cwd).normalize('NFC') : '제제이야';
           byId.set(o.conversationId, {
             conversationId: o.conversationId,
             source: 'cli',
-            title: o.title || o.conversationId.slice(0, 8),
+            title: (o.title || o.conversationId.slice(0, 8)).normalize('NFC'),
             projectId: o.cwd || 'agy-desk',
             projectLabel,
             cwd: o.cwd || undefined,
