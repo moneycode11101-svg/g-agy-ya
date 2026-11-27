@@ -11,13 +11,13 @@ import { AGENT_HOST_PLUGINS } from './plugins/agent-group';
 import { SHELL_HOST_PLUGINS } from './plugins/shell-group';
 import { VISUAL_HOST_PLUGINS } from './plugins/visual-group';
 
-const APP_DISPLAY_NAME = '반중력GUI';
+const APP_DISPLAY_NAME = '제제이야';
 const ICON_PNG_PATH = path.join(__dirname, '../assets/icon.png');
 const DIST_DIR = path.join(__dirname, '../dist');
 
 // Preserve existing workspace userData & webview partition regardless of macOS .app bundle name
-app.setPath('userData', path.join(app.getPath('appData'), 'agy-desk'));
 app.setName(APP_DISPLAY_NAME);
+app.setPath('userData', path.join(app.getPath('appData'), 'agy-desk'));
 
 // Must be registered BEFORE app.whenReady() for privileged `desk-app://` and `desk-plugin://` ESM
 registerKernelProtocolSchemes();

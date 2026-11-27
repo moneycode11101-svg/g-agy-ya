@@ -606,7 +606,7 @@ export function listRecentSessions(limit = 40): SessionSummary[] {
               fileMtime = 0;
             }
           }
-          const projectLabel = o.cwd ? path.basename(o.cwd) : 'agy Desk';
+          const projectLabel = o.cwd ? path.basename(o.cwd) : '제제이야';
           byId.set(o.conversationId, {
             conversationId: o.conversationId,
             source: 'cli',

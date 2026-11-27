@@ -989,7 +989,7 @@ export class HostPluginManager {
   }
 
   private syncTray(): void {
-    const appName = this.deps.appDisplayName || '반중력GUI';
+    const appName = this.deps.appDisplayName || '제제이야';
     if (this.trayEnabled) {
       if (!this.tray) {
         this.tray = new Tray(buildDefaultTrayIcon());

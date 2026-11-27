@@ -20,7 +20,7 @@ export const notifyFeedbackHost: HostPluginModule = {
       const windows = BrowserWindow.getAllWindows();
       const targetWin = windows[0];
       ctx.host.notify({
-        title: '반중력GUI',
+        title: '제제이야',
         body: payload.error ? `작업 오류: ${String(payload.error).slice(0, 80)}` : '에이전트 응답이 완료되었습니다.',
         silent: true,
         onClick: () => {
