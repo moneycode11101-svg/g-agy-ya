@@ -14,6 +14,7 @@ export interface ModelFamilyGroup {
   readonly name: string;
   readonly resolvedModel?: string;
   readonly description?: string;
+  readonly isDefault?: boolean;
   readonly variants: ModelVariant[];
   readonly defaultVariantValue: string;
   readonly defaultVariantEffort?: string;
@@ -22,7 +23,6 @@ export interface ModelFamilyGroup {
 }
 
 export const TIER_KO: Record<string, string> = {
-  default: '기본',
   low: '낮음',
   medium: '보통',
   high: '높음',
@@ -35,7 +35,6 @@ export const TIER_KO: Record<string, string> = {
 };
 
 const TIER_ORDER: Record<string, number> = {
-  default: 0,
   low: 1,
   medium: 2,
   high: 3,
@@ -130,7 +129,7 @@ function parseModelOption(opt: AgentModelOption): {
   return {
     familyId: val,
     familyName: lbl,
-    tierKey: 'default',
+    tierKey: '',
     tierLabel: '',
   };
 }
@@ -138,10 +137,11 @@ function parseModelOption(opt: AgentModelOption): {
 /**
  * Groups flat `agy models` entries into families AND builds effort submenus for
  * Claude / Codex models that expose `supportedEfforts`, while preserving each
- * provider's official curated ordering.
+ * provider's official curated ordering (without virtual `'default'` rows).
  */
 export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): ModelFamilyGroup[] {
-  const isAgyCatalog = models.some(
+  const concreteModels = models.filter((m) => m && m.value && m.value !== 'default');
+  const isAgyCatalog = concreteModels.some(
     (m) => m.value.startsWith('gemini-') || m.value.startsWith('gpt-oss')
   );
 
@@ -151,6 +151,8 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
       name: string;
       resolvedModel?: string;
       description?: string;
+      isDefault?: boolean;
+      defaultEffort?: string;
       badge?: { readonly label: string; readonly tone: 'new' | 'warn' | 'muted' };
       variants: ModelVariant[];
       isEffortSubmenu: boolean;
@@ -158,24 +160,13 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
     }
   >();
 
-  models.forEach((opt, idx) => {
+  concreteModels.forEach((opt, idx) => {
     if (!opt.value) return;
 
     // Models with separate `supportedEfforts` (Claude Code / Codex)
     if (Array.isArray(opt.supportedEfforts) && opt.supportedEfforts.length > 0) {
       const seenEfforts = new Set<string>();
-      const effortItems: ModelVariant[] = [
-        {
-          key: `${opt.value}::default`,
-          value: opt.value,
-          effort: 'default',
-          rawLabel: opt.label,
-          tierKey: 'default',
-          tierLabel: opt.defaultEffort
-            ? `기본 (${TIER_KO[opt.defaultEffort.toLowerCase()] || opt.defaultEffort})`
-            : '기본',
-        },
-      ];
+      const effortItems: ModelVariant[] = [];
       for (const rawEff of opt.supportedEfforts) {
         const eff = String(rawEff || '').trim().toLowerCase();
         if (!eff || eff === 'default' || seenEfforts.has(eff)) continue;
@@ -190,16 +181,20 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
         });
       }
 
-      byFamily.set(opt.value, {
-        name: opt.label,
-        resolvedModel: opt.resolvedModel,
-        description: opt.description,
-        badge: opt.badge,
-        variants: effortItems,
-        isEffortSubmenu: effortItems.length > 1,
-        firstSeenIndex: idx,
-      });
-      return;
+      if (effortItems.length > 0) {
+        byFamily.set(opt.value, {
+          name: opt.label,
+          resolvedModel: opt.resolvedModel,
+          description: opt.description,
+          isDefault: opt.isDefault,
+          defaultEffort: opt.defaultEffort?.trim().toLowerCase() || undefined,
+          badge: opt.badge,
+          variants: effortItems,
+          isEffortSubmenu: true,
+          firstSeenIndex: idx,
+        });
+        return;
+      }
     }
 
     const p = parseModelOption(opt);
@@ -209,12 +204,15 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
         name: p.familyName,
         resolvedModel: opt.resolvedModel,
         description: opt.description,
+        isDefault: opt.isDefault,
         badge: opt.badge ?? (isAgyCatalog ? AGY_FAMILY_BADGES[p.familyId] : undefined),
         variants: [],
         isEffortSubmenu: false,
         firstSeenIndex: idx,
       };
       byFamily.set(p.familyId, bucket);
+    } else if (opt.isDefault) {
+      bucket.isDefault = true;
     }
     if (!bucket.variants.some((v) => v.value === opt.value)) {
       bucket.variants.push({
@@ -237,8 +235,14 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
     let defaultVariantEffort: string | undefined;
 
     if (bucket.isEffortSubmenu) {
+      const preferredEffort =
+        (bucket.defaultEffort && sorted.find((v) => v.effort === bucket.defaultEffort)) ||
+        sorted.find((v) => v.tierKey === 'high') ||
+        sorted.find((v) => v.tierKey === 'medium') ||
+        sorted.find((v) => v.tierKey === 'xhigh') ||
+        sorted[0];
       defaultVariantValue = id;
-      defaultVariantEffort = 'default';
+      defaultVariantEffort = preferredEffort?.effort || sorted[0]?.effort;
     } else {
       // Prefer xhigh/high/medium/neon as sensible click default for embedded-tier `agy` families
       const preferred =
@@ -258,6 +262,7 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
         name: bucket.name,
         resolvedModel: bucket.resolvedModel,
         description: bucket.description,
+        isDefault: bucket.isDefault,
         variants: sorted,
         defaultVariantValue,
         defaultVariantEffort,
@@ -269,8 +274,6 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
 
   return groups
     .sort((a, b) => {
-      if (a.group.id === 'default' && b.group.id !== 'default') return -1;
-      if (b.group.id === 'default' && a.group.id !== 'default') return 1;
       if (isAgyCatalog) {
         const orderDiff = (AGY_FAMILY_ORDER[a.group.id] ?? 500) - (AGY_FAMILY_ORDER[b.group.id] ?? 500);
         if (orderDiff !== 0) return orderDiff;
@@ -280,21 +283,101 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
     .map((x) => x.group);
 }
 
+/**
+ * Resolves any unset or legacy `'default'` model/effort into concrete values
+ * backed by the adapter's available model catalog.
+ */
+export function resolveConcreteModelSelection(opts: {
+  models: readonly AgentModelOption[];
+  currentModel?: string;
+  currentEffort?: string;
+  preferredModel?: string;
+  preferredEffort?: string;
+}): { model: string; effort: string } {
+  const families = groupModelsIntoFamilies(opts.models);
+  const explicitCurrent =
+    opts.currentModel && opts.currentModel !== 'default' ? opts.currentModel : '';
+  const explicitPreferred =
+    opts.preferredModel && opts.preferredModel !== 'default' ? opts.preferredModel : '';
+
+  if (families.length === 0) {
+    return {
+      model: explicitCurrent || explicitPreferred || '',
+      effort:
+        opts.currentEffort && opts.currentEffort !== 'default'
+          ? opts.currentEffort
+          : opts.preferredEffort && opts.preferredEffort !== 'default'
+            ? opts.preferredEffort
+            : '',
+    };
+  }
+
+  const findFamily = (val: string): ModelFamilyGroup | undefined => {
+    if (!val) return undefined;
+    return (
+      families.find((f) => f.variants.some((v) => v.value === val)) ||
+      families.find((f) => f.resolvedModel === val)
+    );
+  };
+
+  const matchedCurrent = findFamily(explicitCurrent);
+  const matchedPreferred = matchedCurrent ? undefined : findFamily(explicitPreferred);
+  const targetFamily =
+    matchedCurrent ||
+    matchedPreferred ||
+    families.find((f) => f.isDefault) ||
+    families[0];
+
+  let resolvedModel: string;
+  if (explicitCurrent) {
+    if (matchedCurrent) {
+      const exactVariant = matchedCurrent.variants.find((v) => v.value === explicitCurrent);
+      resolvedModel = exactVariant ? exactVariant.value : matchedCurrent.defaultVariantValue;
+    } else {
+      resolvedModel = explicitCurrent;
+    }
+  } else if (matchedPreferred) {
+    const exactVariant = matchedPreferred.variants.find((v) => v.value === explicitPreferred);
+    resolvedModel = exactVariant ? exactVariant.value : matchedPreferred.defaultVariantValue;
+  } else {
+    resolvedModel = targetFamily.defaultVariantValue;
+  }
+
+  const effortFamily = matchedCurrent || (!explicitCurrent ? targetFamily : undefined);
+  if (effortFamily?.isEffortSubmenu) {
+    const pickValidEffort = (eff?: string): string | undefined => {
+      if (!eff || eff === 'default') return undefined;
+      const lower = eff.trim().toLowerCase();
+      return effortFamily.variants.find((v) => v.effort === lower)?.effort;
+    };
+    const resolvedEffort =
+      pickValidEffort(opts.currentEffort) ||
+      pickValidEffort(opts.preferredEffort) ||
+      effortFamily.defaultVariantEffort ||
+      effortFamily.variants[0]?.effort ||
+      '';
+    return { model: resolvedModel, effort: resolvedEffort };
+  }
+
+  return { model: resolvedModel, effort: '' };
+}
+
 /** Formats any model value into a concise Korean label for the composer pill */
 export function formatModelDisplayLabel(
   modelValue: string,
   models: readonly AgentModelOption[],
   adapterShortLabel = 'agy'
 ): string {
-  if (!modelValue || modelValue === 'default') {
-    const def = models.find((m) => m.value === 'default');
-    if (def?.label) return def.label;
-    return `기본 모델 (${adapterShortLabel})`;
-  }
+  const concreteModels = models.filter((m) => m && m.value && m.value !== 'default');
+  const effectiveValue =
+    !modelValue || modelValue === 'default'
+      ? resolveConcreteModelSelection({ models: concreteModels }).model
+      : modelValue;
+  if (!effectiveValue) return adapterShortLabel;
   const found =
-    models.find((m) => m.value === modelValue) ||
-    models.find((m) => m.value !== 'default' && m.resolvedModel === modelValue);
-  if (!found) return modelValue;
+    concreteModels.find((m) => m.value === effectiveValue) ||
+    concreteModels.find((m) => m.resolvedModel === effectiveValue);
+  if (!found) return effectiveValue;
   const p = parseModelOption(found);
   if (!p.tierLabel || p.familyName.includes(`(${p.tierLabel})`)) return p.familyName;
   return `${p.familyName} ${p.tierLabel}`;

@@ -22,12 +22,12 @@ export const AGENT_CLAUDE_MANIFEST: PluginManifest = {
     {
       key: 'defaultModel',
       label: '기본 모델',
-      description: '새 Claude 채팅 탭에서 사용할 기본 모델 또는 별칭(default, fable, opus, sonnet, haiku).',
+      description: '새 Claude 채팅 탭에서 사용할 모델 또는 별칭(fable, opus, sonnet, haiku).',
       group: 'Claude 실행',
       type: 'string',
       widget: 'text',
-      defaultValue: 'default',
-      placeholder: 'default (또는 fable / opus / sonnet / haiku)',
+      defaultValue: 'fable',
+      placeholder: 'fable (또는 opus / sonnet / haiku)',
       keywords: ['claude', '클로드', '모델', 'fable', '페이블', 'opus', 'sonnet'],
     },
     {
@@ -37,9 +37,8 @@ export const AGENT_CLAUDE_MANIFEST: PluginManifest = {
       group: 'Claude 실행',
       type: 'enum',
       widget: 'segmented',
-      defaultValue: 'default',
+      defaultValue: 'high',
       options: [
-        { value: 'default', label: '기본' },
         { value: 'low', label: '낮음' },
         { value: 'medium', label: '보통' },
         { value: 'high', label: '높음' },

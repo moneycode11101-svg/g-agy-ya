@@ -41,14 +41,27 @@ function formatClaudeDisplayLabel(rawDisplay: string, value: string): string {
 export function normalizeClaudeSdkModels(raw: unknown): AgentModelOption[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];
 
+  let defaultResolvedModel: string | undefined;
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const item = entry as RawClaudeSdkModelInfo;
+    if (typeof item.value === 'string' && item.value.trim() === 'default') {
+      if (typeof item.resolvedModel === 'string' && item.resolvedModel.trim()) {
+        defaultResolvedModel = item.resolvedModel.trim();
+      }
+      break;
+    }
+  }
+
   const out: AgentModelOption[] = [];
   const seen = new Set<string>();
+  let markedDefault = false;
 
   for (const entry of raw) {
     if (!entry || typeof entry !== 'object') continue;
     const item = entry as RawClaudeSdkModelInfo;
     const value = typeof item.value === 'string' ? item.value.trim() : '';
-    if (!value || seen.has(value)) continue;
+    if (!value || value === 'default' || seen.has(value)) continue;
     seen.add(value);
 
     const resolvedModel =
@@ -62,32 +75,22 @@ export function normalizeClaudeSdkModels(raw: unknown): AgentModelOption[] {
       item.supportsEffort !== false && Array.isArray(item.supportedEffortLevels)
         ? item.supportedEffortLevels
             .map((e) => String(e || '').trim().toLowerCase())
-            .filter(Boolean)
+            .filter((e) => Boolean(e) && e !== 'default')
         : undefined;
 
-    if (value === 'default') {
-      const descLooksLikeModel =
-        Boolean(rawDesc) && rawDesc.length <= 28 && /^(claude\s+)?(fable|opus|sonnet|haiku)\b/i.test(rawDesc);
-      const resolvedLabel = descLooksLikeModel
-        ? rawDesc.replace(/^claude\s+/i, '')
-        : formatResolvedModelFallback(resolvedModel);
-      out.push({
-        value: 'default',
-        label: resolvedLabel ? `기본 모델 (${resolvedLabel})` : '기본 모델 (Claude)',
-        resolvedModel,
-        description: rawDesc || undefined,
-        badge: { label: '추천', tone: 'new' },
-        supportedEfforts: efforts && efforts.length > 0 ? efforts : undefined,
-      });
-      continue;
-    }
-
     const isLatestAlias = CLAUDE_ALIAS_VALUES.has(value.toLowerCase());
+    const matchesDefault =
+      !markedDefault &&
+      Boolean(defaultResolvedModel) &&
+      (resolvedModel === defaultResolvedModel || value === defaultResolvedModel);
+    if (matchesDefault) markedDefault = true;
+
     out.push({
       value,
       label: formatClaudeDisplayLabel(rawDisplay, value),
       resolvedModel,
       description: rawDesc || undefined,
+      ...(matchesDefault ? { isDefault: true } : {}),
       ...(isLatestAlias ? { badge: { label: '최신', tone: 'new' as const } } : {}),
       supportedEfforts: efforts && efforts.length > 0 ? efforts : undefined,
     });

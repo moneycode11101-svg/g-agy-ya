@@ -22,6 +22,7 @@ import type { AgentEvent, ChatMode, SessionSummary } from '../../shared/types';
 import { ChatPaneView } from './ChatPaneView';
 import { useChatSessionStore, type ChatTabState } from './chatStore';
 import { PANE_CHAT_MANIFEST, type PaneChatConfig } from './manifest';
+import { resolveConcreteModelSelection } from './modelCatalog';
 
 function uid(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -70,13 +71,18 @@ function normalizeChatState(raw: Record<string, unknown>, ctx: DeskClientContext
     ? raw.addDirs.filter((d): d is string => typeof d === 'string' && d.trim().length > 0)
     : undefined;
 
-  const model = typeof raw.model === 'string' && raw.model ? raw.model : adapterCfg.defaultModel || 'default';
-  const modelHasEmbeddedTier = /-(low|medium|high|xhigh|max)$/i.test(model);
-  const effort = modelHasEmbeddedTier
-    ? 'default'
-    : typeof raw.effort === 'string' && raw.effort
-      ? raw.effort
-      : adapterCfg.defaultEffort || 'default';
+  const adapterModels = useChatSessionStore.getState().availableModelsByAdapter[adapterId] ?? [];
+  const rawModel = typeof raw.model === 'string' && raw.model && raw.model !== 'default' ? raw.model : undefined;
+  const rawEffort = typeof raw.effort === 'string' && raw.effort && raw.effort !== 'default' ? raw.effort : undefined;
+  const resolved = resolveConcreteModelSelection({
+    models: adapterModels,
+    currentModel: rawModel,
+    currentEffort: rawEffort,
+    preferredModel: adapterCfg.defaultModel,
+    preferredEffort: adapterCfg.defaultEffort,
+  });
+  const model = resolved.model;
+  const effort = resolved.effort;
 
   return {
     sessionId: typeof raw.sessionId === 'string' && raw.sessionId ? raw.sessionId : uid('sess'),
@@ -383,7 +389,7 @@ export const paneChatClientPlugin: ClientPluginModule<PaneChatConfig> = {
           agyConversationId: summary.conversationId,
           ...(summary.cwd ? { cwd: summary.cwd } : {}),
           projectLabel: summary.projectLabel || undefined,
-          model: summary.model || 'default',
+          ...(summary.model && summary.model !== 'default' ? { model: summary.model } : {}),
           source: summary.source,
         };
 

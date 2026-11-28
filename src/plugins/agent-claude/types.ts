@@ -14,34 +14,33 @@ export type ClaudeRuntimeInfo = AgentRuntimeInfo;
 
 export const FALLBACK_CLAUDE_MODELS: ClaudeModelOption[] = [
   {
-    value: 'default',
-    label: '기본 모델 (Claude Code)',
-    badge: { label: '추천', tone: 'new' },
-    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
-  },
-  {
     value: 'opus',
     label: 'Claude Opus (최신)',
     badge: { label: '최신', tone: 'new' },
     supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    defaultEffort: 'high',
   },
   {
     value: 'fable',
     label: 'Claude Fable (최신)',
+    isDefault: true,
     badge: { label: '최신', tone: 'new' },
     supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    defaultEffort: 'high',
   },
   {
     value: 'sonnet',
     label: 'Claude Sonnet (최신)',
     badge: { label: '최신', tone: 'new' },
     supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    defaultEffort: 'high',
   },
   {
     value: 'haiku',
     label: 'Claude Haiku (최신)',
     badge: { label: '최신', tone: 'new' },
     supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    defaultEffort: 'high',
   },
   { value: 'claude-opus-4-6', label: 'Claude Opus 4.6', supportedEfforts: ['low', 'medium', 'high', 'max'] },
   { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', supportedEfforts: ['low', 'medium', 'high', 'max'] },

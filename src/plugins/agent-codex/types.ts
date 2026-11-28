@@ -13,7 +13,13 @@ export type CodexModelOption = AgentModelOption;
 export type CodexRuntimeInfo = AgentRuntimeInfo;
 
 export const FALLBACK_CODEX_MODELS: CodexModelOption[] = [
-  { value: 'default', label: '기본 모델 (Codex)' },
+  {
+    value: 'gpt-6.2-sol',
+    label: 'GPT-6.2-Sol',
+    isDefault: true,
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    defaultEffort: 'medium',
+  },
   {
     value: 'gpt-6.1-sol',
     label: 'GPT-6.1 Sol',

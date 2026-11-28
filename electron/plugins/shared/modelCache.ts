@@ -53,16 +53,19 @@ export function loadCachedAdapterModels(adapterId: string): AgentModelOption[] |
   const entry = file.adapters[adapterId];
   if (!entry || !Array.isArray(entry.models) || entry.models.length === 0) return null;
   const valid = entry.models.filter(
-    (m): m is AgentModelOption => Boolean(m && typeof m.value === 'string' && m.value && typeof m.label === 'string')
+    (m): m is AgentModelOption =>
+      Boolean(m && typeof m.value === 'string' && m.value && m.value !== 'default' && typeof m.label === 'string')
   );
   return valid.length > 0 ? valid : null;
 }
 
 export function saveCachedAdapterModels(adapterId: string, models: readonly AgentModelOption[]): void {
   if (!Array.isArray(models) || models.length === 0) return;
+  const filtered = models.filter((m) => m && m.value && m.value !== 'default');
+  if (filtered.length === 0) return;
   const file = readCacheFile();
   file.adapters[adapterId] = {
-    models: [...models],
+    models: filtered,
     savedAt: new Date().toISOString(),
   };
   writeCacheFile(file);

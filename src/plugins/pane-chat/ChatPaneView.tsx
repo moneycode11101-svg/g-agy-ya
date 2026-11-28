@@ -36,6 +36,7 @@ import {
   useCommandRegistry,
   useIntrospectionStore,
   useLayoutStore,
+  usePluginConfigStore,
   useSlotRegistry,
   type ContextMenuItemDescriptor,
   type DeskClientContext,
@@ -54,6 +55,7 @@ import {
   BUILTIN_SLASH_COMMANDS,
   formatModelDisplayLabel,
   groupModelsIntoFamilies,
+  resolveConcreteModelSelection,
   type SlashCommandItem,
 } from './modelCatalog';
 
@@ -312,6 +314,42 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
 
   const modelFamilies = useMemo(() => groupModelsIntoFamilies(availableModels), [availableModels]);
 
+  // Migrate any legacy `'default'` / unset model or effort on open tabs to concrete adapter selections
+  useEffect(() => {
+    if (modelFamilies.length === 0) return;
+    const needsModelMigration = !state.model || state.model === 'default';
+    const activeFam = needsModelMigration
+      ? null
+      : modelFamilies.find(
+          (f) => f.variants.some((v) => v.value === state.model) || f.resolvedModel === state.model
+        ) || null;
+    const needsEffortMigration =
+      Boolean(activeFam?.isEffortSubmenu) && (!state.effort || state.effort === 'default');
+    if (!needsModelMigration && !needsEffortMigration) return;
+
+    const adapterCfg = (usePluginConfigStore.getState().configsByPlugin[adapterId] || {}) as {
+      defaultModel?: string;
+      defaultEffort?: string;
+    };
+    const resolved = resolveConcreteModelSelection({
+      models: availableModels,
+      currentModel: needsModelMigration ? undefined : state.model,
+      currentEffort: needsEffortMigration ? undefined : state.effort,
+      preferredModel: adapterCfg.defaultModel,
+      preferredEffort: adapterCfg.defaultEffort,
+    });
+    const patch: Partial<ChatTabState> = {};
+    if (needsModelMigration && resolved.model && resolved.model !== state.model) {
+      patch.model = resolved.model;
+    }
+    if ((needsModelMigration || needsEffortMigration) && resolved.effort !== state.effort) {
+      patch.effort = resolved.effort;
+    }
+    if (Object.keys(patch).length > 0) {
+      updateState(patch);
+    }
+  }, [adapterId, availableModels, modelFamilies, state.effort, state.model, updateState]);
+
   const allSlashItems = useMemo<SlashCommandItem[]>(() => {
     const items: SlashCommandItem[] = [...BUILTIN_SLASH_COMMANDS];
     const seen = new Set(items.map((i) => i.command.toLowerCase()));
@@ -448,8 +486,8 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   // Independent `warnOnCacheReset` — works even when `hud-token-bar` plugin is OFF (mandatory fix c)
   const requestSwitchModel = (modelValue: string, effort?: string) => {
     setModelMenuOpen(false);
-    const nextEffort = effort ?? 'default';
-    const curEffort = state.effort || 'default';
+    const nextEffort = effort && effort !== 'default' ? effort : '';
+    const curEffort = state.effort && state.effort !== 'default' ? state.effort : '';
     if (modelValue === state.model && nextEffort === curEffort) return;
     const patch: Partial<ChatTabState> = { model: modelValue, effort: nextEffort };
     const ctxTokens = metrics?.currentContext ?? 0;
@@ -461,10 +499,9 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
         currentAdapter?.shortLabel ||
           (adapterId === 'agent-claude' ? 'Claude' : adapterId === 'agent-codex' ? 'Codex' : 'agy')
       );
-      const label =
-        nextEffort !== 'default'
-          ? `${baseLabel} · ${EFFORT_LABELS[nextEffort] || nextEffort}`
-          : baseLabel;
+      const label = nextEffort
+        ? `${baseLabel} · ${EFFORT_LABELS[nextEffort] || nextEffort}`
+        : baseLabel;
       setPendingSwitch({ patch, label });
     } else {
       updateState(patch);
@@ -482,10 +519,20 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
 
   const handleSwitchAdapter = (nextAdapterId: string) => {
     if (nextAdapterId === adapterId) return;
+    const nextModels = useChatSessionStore.getState().availableModelsByAdapter[nextAdapterId] ?? [];
+    const nextCfg = (usePluginConfigStore.getState().configsByPlugin[nextAdapterId] || {}) as {
+      defaultModel?: string;
+      defaultEffort?: string;
+    };
+    const resolved = resolveConcreteModelSelection({
+      models: nextModels,
+      preferredModel: nextCfg.defaultModel,
+      preferredEffort: nextCfg.defaultEffort,
+    });
     updateState({
       adapterId: nextAdapterId,
-      model: 'default',
-      effort: 'default',
+      model: resolved.model,
+      effort: resolved.effort,
       externalSessionId: null,
       agyConversationId: null,
     });
@@ -754,6 +801,17 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const colMaxWidthClass =
     cfg.chatWidth === 'wide' ? 'max-w-none' : cfg.chatWidth === 'medium' ? 'max-w-[900px]' : 'max-w-[740px]';
 
+  const activeModelFamily = useMemo(() => {
+    if (state.model && state.model !== 'default') {
+      return (
+        modelFamilies.find((f) => f.variants.some((v) => v.value === state.model)) ||
+        modelFamilies.find((f) => f.resolvedModel === state.model) ||
+        null
+      );
+    }
+    return modelFamilies.find((f) => f.isDefault) || modelFamilies[0] || null;
+  }, [modelFamilies, state.model]);
+
   const currentModelLabel = formatModelDisplayLabel(
     state.model,
     availableModels,
@@ -762,10 +820,18 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
   const modelHasEmbeddedTier = Boolean(
     state.model && state.model !== 'default' && /-(low|medium|high|xhigh|max)$/i.test(state.model)
   );
-  const currentEffortSuffix =
-    !modelHasEmbeddedTier && state.effort && state.effort !== 'default'
-      ? ` · ${EFFORT_LABELS[state.effort] || state.effort}`
+  const displayedEffort = activeModelFamily?.isEffortSubmenu
+    ? state.effort &&
+      state.effort !== 'default' &&
+      activeModelFamily.variants.some((v) => v.effort === state.effort)
+      ? state.effort
+      : activeModelFamily.defaultVariantEffort || ''
+    : !activeModelFamily && !modelHasEmbeddedTier && state.effort && state.effort !== 'default'
+      ? state.effort
       : '';
+  const currentEffortSuffix = displayedEffort
+    ? ` · ${EFFORT_LABELS[displayedEffort] || displayedEffort}`
+    : '';
   const currentModeLabel = MODE_OPTIONS.find((m) => m.value === state.mode)?.label || '터보';
   const totalGroups = Object.keys(groups).length;
 
@@ -1880,7 +1946,7 @@ export const ChatPaneView: React.FC<ChatPaneViewProps> = ({ groupId, tab, update
                     open={modelMenuOpen}
                     anchorRef={modelBtnRef}
                     onClose={() => setModelMenuOpen(false)}
-                    availableModelsCount={availableModels.length}
+                    availableModelsCount={availableModels.filter((m) => m.value !== 'default').length}
                     modelFamilies={modelFamilies}
                     currentModel={state.model}
                     currentEffort={state.effort}

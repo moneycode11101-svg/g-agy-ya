@@ -22,12 +22,12 @@ export const AGENT_CODEX_MANIFEST: PluginManifest = {
     {
       key: 'defaultModel',
       label: '기본 모델',
-      description: '새 Codex 채팅 탭에서 사용할 모델 슬러그 (예: default, gpt-6.1-sol, gpt-5.4).',
+      description: '새 Codex 채팅 탭에서 사용할 모델 슬러그 (비워두면 최신 기본 모델 자동 선택, 예: gpt-6.2-sol).',
       group: 'Codex 실행',
       type: 'string',
       widget: 'text',
-      defaultValue: 'default',
-      placeholder: 'default (또는 gpt-6.1-sol)',
+      defaultValue: '',
+      placeholder: '자동 선택 (예: gpt-6.2-sol)',
       keywords: ['codex', 'openai', 'gpt', 'sol', '모델'],
     },
     {
@@ -39,7 +39,6 @@ export const AGENT_CODEX_MANIFEST: PluginManifest = {
       widget: 'segmented',
       defaultValue: 'xhigh',
       options: [
-        { value: 'default', label: '기본' },
         { value: 'low', label: '낮음' },
         { value: 'medium', label: '보통' },
         { value: 'high', label: '높음' },

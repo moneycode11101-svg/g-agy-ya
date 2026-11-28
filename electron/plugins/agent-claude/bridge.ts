@@ -563,8 +563,24 @@ export class ClaudePluginBridge {
     suppressClaudeShadowedWarning();
     const cfg = this.getConfig();
     const cwd = req.cwd && fs.existsSync(req.cwd) ? req.cwd : os.homedir();
-    const effectiveModel = req.model && req.model !== 'default' ? req.model : cfg.defaultModel || 'default';
-    const effectiveEffort = req.effort && req.effort !== 'default' ? req.effort : cfg.defaultEffort || 'default';
+    const effectiveModel =
+      req.model && req.model !== 'default'
+        ? req.model
+        : cfg.defaultModel && cfg.defaultModel !== 'default'
+          ? cfg.defaultModel
+          : '';
+    const knownModels = this.cachedModels?.items || FALLBACK_CLAUDE_MODELS;
+    const matchedModel = knownModels.find(
+      (m) => m.value === effectiveModel || (effectiveModel && m.resolvedModel === effectiveModel)
+    );
+    const modelSupportsEffort = !matchedModel || Boolean(matchedModel.supportedEfforts?.length);
+    const rawEffort =
+      req.effort && req.effort !== 'default'
+        ? req.effort
+        : cfg.defaultEffort && cfg.defaultEffort !== 'default'
+          ? cfg.defaultEffort
+          : '';
+    const effectiveEffort = modelSupportsEffort ? rawEffort : '';
     const effectiveMode: ChatMode = req.mode || cfg.localPermission || 'auto';
     const permMode = mapChatModeToClaudePermissionMode(effectiveMode);
     const requestedSessionId = req.externalSessionId ?? req.agyConversationId ?? null;
@@ -598,13 +614,15 @@ export class ClaudePluginBridge {
         }
         if (effectiveModel !== worker.model) {
           await worker.queryRuntime
-            ?.setModel?.(effectiveModel === 'default' ? undefined : effectiveModel)
+            ?.setModel?.(!effectiveModel || effectiveModel === 'default' ? undefined : effectiveModel)
             .catch(() => {});
           worker.model = effectiveModel;
         }
         if (effectiveEffort !== worker.effort) {
           await worker.queryRuntime
-            ?.applyFlagSettings?.({ effortLevel: effectiveEffort === 'default' ? null : effectiveEffort })
+            ?.applyFlagSettings?.({
+              effortLevel: !effectiveEffort || effectiveEffort === 'default' ? null : effectiveEffort,
+            })
             .catch(() => {});
           worker.effort = effectiveEffort;
         }

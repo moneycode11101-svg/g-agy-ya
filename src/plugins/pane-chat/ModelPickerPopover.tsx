@@ -48,18 +48,26 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   onSelectModel,
   onOpenUsage,
 }) => {
-  const normalizedEffort = currentEffort || 'default';
-
   const activeModelFamily = useMemo(() => {
-    const exact = modelFamilies.find((f) => f.variants.some((v) => v.value === currentModel));
-    if (exact) return exact;
     if (currentModel && currentModel !== 'default') {
-      return (
-        modelFamilies.find((f) => f.id !== 'default' && f.resolvedModel === currentModel) || null
-      );
+      const exact = modelFamilies.find((f) => f.variants.some((v) => v.value === currentModel));
+      if (exact) return exact;
+      const byResolved = modelFamilies.find((f) => f.resolvedModel === currentModel);
+      if (byResolved) return byResolved;
+      return null;
     }
-    return null;
+    return modelFamilies.find((f) => f.isDefault) || modelFamilies[0] || null;
   }, [modelFamilies, currentModel]);
+
+  const resolveEffectiveEffort = useCallback(
+    (fam: ModelFamilyGroup): string => {
+      if (!fam.isEffortSubmenu) return '';
+      const raw = currentEffort && currentEffort !== 'default' ? currentEffort.toLowerCase() : '';
+      if (raw && fam.variants.some((v) => v.effort === raw)) return raw;
+      return fam.defaultVariantEffort || fam.variants[0]?.effort || '';
+    },
+    [currentEffort]
+  );
 
   const [activeFamilyId, setActiveFamilyId] = useState<string | null>(null);
   const [mainPos, setMainPos] = useState<MainPos | null>(null);
@@ -261,16 +269,17 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
         >
           {modelFamilies.map((fam) => {
             const isSelectedFamily = activeModelFamily?.id === fam.id;
+            const effectiveEffort = resolveEffectiveEffort(fam);
             const activeVariant = isSelectedFamily
               ? fam.isEffortSubmenu
-                ? fam.variants.find((v) => (v.effort || 'default') === normalizedEffort) || fam.variants[0]
+                ? fam.variants.find((v) => v.effort === effectiveEffort) || fam.variants[0]
                 : fam.variants.find((v) => v.value === currentModel)
               : undefined;
             const isExpanded = expandedFamily?.id === fam.id;
             const hasMultiple = fam.variants.length > 1;
             const shownTier = fam.isEffortSubmenu
-              ? isSelectedFamily && normalizedEffort !== 'default'
-                ? TIER_KO[normalizedEffort] || normalizedEffort
+              ? isSelectedFamily && effectiveEffort
+                ? TIER_KO[effectiveEffort] || effectiveEffort
                 : ''
               : activeVariant?.tierLabel ||
                 fam.variants.find((v) => v.value === fam.defaultVariantValue)?.tierLabel ||
@@ -346,7 +355,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                       const active =
                         isSelectedFamily &&
                         (fam.isEffortSubmenu
-                          ? (v.effort || 'default') === normalizedEffort
+                          ? v.effort === effectiveEffort
                           : currentModel === v.value);
                       return (
                         <button
@@ -425,10 +434,11 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
 
           {expandedFamily.variants.map((v) => {
             const isExpandedSelected = activeModelFamily?.id === expandedFamily.id;
+            const expandedEffectiveEffort = resolveEffectiveEffort(expandedFamily);
             const active =
               isExpandedSelected &&
               (expandedFamily.isEffortSubmenu
-                ? (v.effort || 'default') === normalizedEffort
+                ? v.effort === expandedEffectiveEffort
                 : currentModel === v.value);
             return (
               <button

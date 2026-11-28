@@ -255,9 +255,11 @@ export const useChatSessionStore = create<ChatSessionStoreState>((set, get) => (
 
   setAvailableModels: (models, adapterId = 'agent-agy') => {
     if (!Array.isArray(models) || models.length === 0) return;
+    const cleaned = models.filter((m) => m && m.value && m.value !== 'default');
+    if (cleaned.length === 0) return;
     set((prev) => ({
-      availableModelsByAdapter: { ...prev.availableModelsByAdapter, [adapterId]: models },
-      ...(adapterId === 'agent-agy' ? { availableModels: models } : {}),
+      availableModelsByAdapter: { ...prev.availableModelsByAdapter, [adapterId]: cleaned },
+      ...(adapterId === 'agent-agy' ? { availableModels: cleaned } : {}),
     }));
   },
 

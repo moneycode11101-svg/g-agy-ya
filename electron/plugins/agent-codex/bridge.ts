@@ -383,8 +383,8 @@ export class CodexPluginBridge {
     try {
       const client = this.getClient();
       await client.ensureStarted();
-      const collected: AgentModelOption[] = [{ value: 'default', label: '기본 모델 (Codex)' }];
-      const seen = new Set<string>(['default']);
+      const collected: AgentModelOption[] = [];
+      const seen = new Set<string>();
       let cursor: string | undefined;
 
       for (let page = 0; page < 4; page++) {
@@ -410,28 +410,20 @@ export class CodexPluginBridge {
         for (const m of resp?.data || []) {
           if (m.hidden === true) continue;
           const val = String(m.slug || m.id || '').trim();
-          if (!val || seen.has(val)) continue;
+          if (!val || val === 'default' || seen.has(val)) continue;
           seen.add(val);
           const efforts = Array.isArray(m.supportedReasoningEfforts)
             ? m.supportedReasoningEfforts
                 .map((e) => (typeof e === 'string' ? e : String(e?.reasoningEffort || e?.effort || '')))
-                .filter(Boolean)
+                .map((e) => e.trim().toLowerCase())
+                .filter((e) => Boolean(e) && e !== 'default')
             : undefined;
           const displayLabel = String(m.displayName || m.name || val);
-          if (m.isDefault) {
-            collected[0] = {
-              value: 'default',
-              label: `기본 모델 (${displayLabel})`,
-              resolvedModel: val,
-              badge: { label: '추천', tone: 'new' },
-              supportedEfforts: efforts && efforts.length > 0 ? efforts : undefined,
-              defaultEffort: m.defaultReasoningEffort || undefined,
-            };
-          }
           collected.push({
             value: val,
             label: displayLabel,
             description: m.description || undefined,
+            ...(m.isDefault ? { isDefault: true } : {}),
             supportedEfforts: efforts && efforts.length > 0 ? efforts : undefined,
             defaultEffort: m.defaultReasoningEffort || undefined,
           });
@@ -440,14 +432,14 @@ export class CodexPluginBridge {
         cursor = resp.nextCursor;
       }
 
-      if (collected.length > 1) {
+      if (collected.length > 0) {
         this.cachedModels = { items: collected, fetchedAt: Date.now() };
         return collected;
       }
     } catch {
       // Fallback to local models_cache.json
       const fromCache = this.readModelsCacheFallback();
-      if (fromCache.length > 1) {
+      if (fromCache.length > 0) {
         this.cachedModels = { items: fromCache, fetchedAt: Date.now() };
         return fromCache;
       }
@@ -456,7 +448,7 @@ export class CodexPluginBridge {
   }
 
   private readModelsCacheFallback(): AgentModelOption[] {
-    const out: AgentModelOption[] = [{ value: 'default', label: '기본 모델 (Codex)' }];
+    const out: AgentModelOption[] = [];
     try {
       const cachePath = path.join(resolveCodexHome(this.getConfig().codexHome), 'models_cache.json');
       if (!fs.existsSync(cachePath)) return out;
@@ -465,24 +457,30 @@ export class CodexPluginBridge {
           slug?: string;
           display_name?: string;
           visibility?: string;
+          priority?: number;
           default_reasoning_level?: string;
           supported_reasoning_levels?: Array<string | { effort?: string; reasoningEffort?: string }>;
         }>;
       };
-      const seen = new Set<string>(['default']);
-      for (const m of parsed?.models || []) {
+      const rawModels = [...(parsed?.models || [])].sort(
+        (a, b) => (a.priority ?? 999) - (b.priority ?? 999)
+      );
+      const seen = new Set<string>();
+      for (const m of rawModels) {
         if (m.visibility === 'hide') continue;
         const slug = String(m.slug || '').trim();
-        if (!slug || seen.has(slug)) continue;
+        if (!slug || slug === 'default' || seen.has(slug)) continue;
         seen.add(slug);
         const efforts = Array.isArray(m.supported_reasoning_levels)
           ? m.supported_reasoning_levels
               .map((e) => (typeof e === 'string' ? e : String(e?.reasoningEffort || e?.effort || '')))
-              .filter(Boolean)
+              .map((e) => e.trim().toLowerCase())
+              .filter((e) => Boolean(e) && e !== 'default')
           : undefined;
         out.push({
           value: slug,
           label: String(m.display_name || slug),
+          ...(out.length === 0 ? { isDefault: true } : {}),
           supportedEfforts: efforts && efforts.length > 0 ? efforts : undefined,
           defaultEffort: m.default_reasoning_level || undefined,
         });
