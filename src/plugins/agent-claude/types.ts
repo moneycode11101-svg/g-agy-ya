@@ -42,9 +42,9 @@ export const FALLBACK_CLAUDE_MODELS: ClaudeModelOption[] = [
     supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     defaultEffort: 'high',
   },
-  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6', supportedEfforts: ['low', 'medium', 'high', 'max'] },
-  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', supportedEfforts: ['low', 'medium', 'high', 'max'] },
-  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6', isLegacy: true, supportedEfforts: ['low', 'medium', 'high', 'max'] },
+  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', isLegacy: true, supportedEfforts: ['low', 'medium', 'high', 'max'] },
+  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', isLegacy: true },
 ];
 
 export const CLAUDE_RPC = {

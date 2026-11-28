@@ -21,20 +21,26 @@ export const FALLBACK_CODEX_MODELS: CodexModelOption[] = [
     defaultEffort: 'medium',
   },
   {
+    value: 'gpt-6.2-astra',
+    label: 'GPT-6.2-Astra',
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    defaultEffort: 'low',
+  },
+  {
+    value: 'gpt-6.1-terra',
+    label: 'GPT-6.1 Terra',
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    defaultEffort: 'low',
+  },
+  {
     value: 'gpt-6.1-sol',
-    label: 'GPT-6.1 Sol',
+    label: 'GPT-6.1-Sol',
     supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     defaultEffort: 'xhigh',
   },
   {
     value: 'gpt-5.4',
     label: 'GPT-5.4',
-    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
-    defaultEffort: 'high',
-  },
-  {
-    value: 'gpt-5.3-codex',
-    label: 'GPT-5.3 Codex',
     supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
     defaultEffort: 'high',
   },

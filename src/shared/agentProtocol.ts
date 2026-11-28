@@ -34,6 +34,7 @@ export interface AgentModelOption {
   readonly resolvedModel?: string;
   readonly description?: string;
   readonly isDefault?: boolean;
+  readonly isLegacy?: boolean;
   readonly badge?: { readonly label: string; readonly tone: 'new' | 'warn' | 'muted' };
   readonly supportedEfforts?: readonly string[];
   readonly defaultEffort?: string;

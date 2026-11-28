@@ -15,6 +15,7 @@ export interface ModelFamilyGroup {
   readonly resolvedModel?: string;
   readonly description?: string;
   readonly isDefault?: boolean;
+  readonly isLegacy?: boolean;
   readonly variants: ModelVariant[];
   readonly defaultVariantValue: string;
   readonly defaultVariantEffort?: string;
@@ -68,6 +69,99 @@ const AGY_FAMILY_BADGES: Record<string, { label: string; tone: 'new' | 'warn' | 
   'claude-opus-5-5': { label: '최신', tone: 'new' },
   'claude-sonnet-5-5': { label: '최신', tone: 'new' },
 };
+
+const AGY_LEGACY_FAMILY_IDS = new Set(['gemini-4-argon', 'gemini-3.8-flash', 'gpt-oss-120b']);
+const CLAUDE_LATEST_ALIASES = new Set(['fable', 'opus', 'sonnet', 'haiku']);
+
+function parseCodexGptVersion(id: string): { major: number; minor: number; score: number; line: string } | null {
+  const m = id.trim().match(/^gpt-(\d+)(?:\.(\d+))?(?:-(.+))?$/i);
+  if (!m) return null;
+  const major = Number(m[1]);
+  const minor = m[2] ? Number(m[2]) : 0;
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return null;
+  return {
+    major,
+    minor,
+    score: major * 100 + minor,
+    line: (m[3] || 'base').toLowerCase(),
+  };
+}
+
+function applyLatestLegacyClassification(
+  groups: ModelFamilyGroup[],
+  isAgyCatalog: boolean
+): ModelFamilyGroup[] {
+  if (groups.length === 0) return groups;
+
+  const isClaudeCatalog =
+    !isAgyCatalog &&
+    groups.some((g) => CLAUDE_LATEST_ALIASES.has(g.id.toLowerCase()) || /^claude-/i.test(g.id));
+  const isCodexCatalog =
+    !isAgyCatalog &&
+    !isClaudeCatalog &&
+    groups.some((g) => /^gpt-/i.test(g.id) || /^o\d+-/i.test(g.id) || /codex/i.test(g.id));
+
+  let classified: ModelFamilyGroup[] = groups;
+
+  if (isAgyCatalog) {
+    classified = groups.map((g) => {
+      if (g.isLegacy !== undefined) return g;
+      const legacy = g.badge?.tone === 'warn' || AGY_LEGACY_FAMILY_IDS.has(g.id);
+      return { ...g, isLegacy: legacy };
+    });
+  } else if (isClaudeCatalog) {
+    const hasExplicitLatest = groups.some(
+      (g) => CLAUDE_LATEST_ALIASES.has(g.id.toLowerCase()) || g.badge?.label === '최신'
+    );
+    if (hasExplicitLatest) {
+      classified = groups.map((g) => {
+        if (g.isLegacy !== undefined) return g;
+        const isLatest =
+          CLAUDE_LATEST_ALIASES.has(g.id.toLowerCase()) || g.badge?.label === '최신';
+        return { ...g, isLegacy: !isLatest };
+      });
+    }
+  } else if (isCodexCatalog) {
+    let maxMajor = 0;
+    let maxScore = 0;
+    const maxScoreByLine = new Map<string, number>();
+
+    for (const g of groups) {
+      const parsed = parseCodexGptVersion(g.id);
+      if (!parsed) continue;
+      if (parsed.major > maxMajor) maxMajor = parsed.major;
+      if (parsed.score > maxScore) maxScore = parsed.score;
+      const prev = maxScoreByLine.get(parsed.line) ?? -1;
+      if (parsed.score > prev) maxScoreByLine.set(parsed.line, parsed.score);
+    }
+
+    classified = groups.map((g) => {
+      let legacy = g.isLegacy;
+      if (legacy === undefined) {
+        if (g.isDefault) {
+          legacy = false;
+        } else {
+          const parsed = parseCodexGptVersion(g.id);
+          if (parsed && maxScore > 0) {
+            const isTopOfLine = parsed.score === maxScoreByLine.get(parsed.line);
+            const isCurrentGen = parsed.major === maxMajor && maxScore - parsed.score <= 1;
+            legacy = !(isTopOfLine && isCurrentGen);
+          } else {
+            legacy = maxScore > 0;
+          }
+        }
+      }
+      const badge = !legacy && !g.badge ? { label: '최신', tone: 'new' as const } : g.badge;
+      return { ...g, isLegacy: legacy, badge };
+    });
+  }
+
+  // Safety guard: never leave the primary "최신 모델" view empty
+  if (classified.every((g) => g.isLegacy)) {
+    return classified.map((g) => ({ ...g, isLegacy: false }));
+  }
+  return classified;
+}
 
 function parseModelOption(opt: AgentModelOption): {
   familyId: string;
@@ -152,6 +246,7 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
       resolvedModel?: string;
       description?: string;
       isDefault?: boolean;
+      isLegacy?: boolean;
       defaultEffort?: string;
       badge?: { readonly label: string; readonly tone: 'new' | 'warn' | 'muted' };
       variants: ModelVariant[];
@@ -187,6 +282,7 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
           resolvedModel: opt.resolvedModel,
           description: opt.description,
           isDefault: opt.isDefault,
+          isLegacy: opt.isLegacy,
           defaultEffort: opt.defaultEffort?.trim().toLowerCase() || undefined,
           badge: opt.badge,
           variants: effortItems,
@@ -205,14 +301,16 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
         resolvedModel: opt.resolvedModel,
         description: opt.description,
         isDefault: opt.isDefault,
+        isLegacy: opt.isLegacy,
         badge: opt.badge ?? (isAgyCatalog ? AGY_FAMILY_BADGES[p.familyId] : undefined),
         variants: [],
         isEffortSubmenu: false,
         firstSeenIndex: idx,
       };
       byFamily.set(p.familyId, bucket);
-    } else if (opt.isDefault) {
-      bucket.isDefault = true;
+    } else {
+      if (opt.isDefault) bucket.isDefault = true;
+      if (opt.isLegacy === false) bucket.isLegacy = false;
     }
     if (!bucket.variants.some((v) => v.value === opt.value)) {
       bucket.variants.push({
@@ -263,6 +361,7 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
         resolvedModel: bucket.resolvedModel,
         description: bucket.description,
         isDefault: bucket.isDefault,
+        isLegacy: bucket.isLegacy,
         variants: sorted,
         defaultVariantValue,
         defaultVariantEffort,
@@ -272,7 +371,7 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
     });
   }
 
-  return groups
+  const ordered = groups
     .sort((a, b) => {
       if (isAgyCatalog) {
         const orderDiff = (AGY_FAMILY_ORDER[a.group.id] ?? 500) - (AGY_FAMILY_ORDER[b.group.id] ?? 500);
@@ -281,6 +380,8 @@ export function groupModelsIntoFamilies(models: readonly AgentModelOption[]): Mo
       return a.firstSeenIndex - b.firstSeenIndex;
     })
     .map((x) => x.group);
+
+  return applyLatestLegacyClassification(ordered, isAgyCatalog);
 }
 
 /**

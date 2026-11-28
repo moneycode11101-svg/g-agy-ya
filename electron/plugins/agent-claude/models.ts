@@ -91,7 +91,9 @@ export function normalizeClaudeSdkModels(raw: unknown): AgentModelOption[] {
       resolvedModel,
       description: rawDesc || undefined,
       ...(matchesDefault ? { isDefault: true } : {}),
-      ...(isLatestAlias ? { badge: { label: '최신', tone: 'new' as const } } : {}),
+      ...(isLatestAlias
+        ? { badge: { label: '최신', tone: 'new' as const }, isLegacy: false }
+        : { isLegacy: true }),
       supportedEfforts: efforts && efforts.length > 0 ? efforts : undefined,
     });
   }
