@@ -2,14 +2,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
+  ArrowRight,
   ArrowUpCircle,
   CheckCircle2,
   Download,
   ExternalLink,
   GitCommitHorizontal,
   Loader2,
+  MoreVertical,
   RefreshCw,
-  RotateCw,
   X,
 } from 'lucide-react';
 import { create } from 'zustand';
@@ -56,11 +57,11 @@ async function invokeCheck(manual = true): Promise<void> {
   }
 }
 
-async function invokeApply(): Promise<void> {
+async function invokeApply(autoRelaunch = false): Promise<void> {
   const bridge = getDeskKernelBridge();
   if (!bridge) return;
   try {
-    await bridge.rpc.invoke<{ ok: boolean; error?: string }>(APP_UPDATER_RPC.APPLY);
+    await bridge.rpc.invoke<{ ok: boolean; error?: string }>(APP_UPDATER_RPC.APPLY, { autoRelaunch });
   } catch {
     // host handles error state
   }
@@ -104,22 +105,34 @@ const TitlebarUpdateControl: React.FC = () => {
   const setOpen = useAppUpdaterStore((s) => s.setPopoverOpen);
   const toggleOpen = useAppUpdaterStore((s) => s.togglePopover);
 
-  const anchorRef = useRef<HTMLButtonElement | null>(null);
+  const anchorWrapRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ right: number; top: number }>({ right: 16, top: 48 });
 
-  const remoteKey = snap ? (snap.mode === 'git' ? snap.remoteSha : snap.latestVersion) : null;
-  const hasVisibleUpdate = Boolean(
-    snap && snap.status === 'update-available' && (!remoteKey || snap.dismissedRemoteKey !== remoteKey)
-  );
+  const effectiveKey = snap
+    ? snap.updateKey ?? (snap.mode === 'git' ? snap.remoteSha : snap.latestVersion)
+    : null;
+  const isDismissed = Boolean(effectiveKey && snap?.dismissedRemoteKey === effectiveKey);
   const isUpdating = snap?.status === 'updating';
   const isReadyToRestart = snap?.status === 'ready-to-restart';
+  const isUpdateAvailable = snap?.status === 'update-available';
   const isChecking = snap?.status === 'checking';
+
+  const hasVisibleReady = isReadyToRestart && !isDismissed;
+  const hasVisibleUpdate = isUpdateAvailable && !isDismissed;
+  const showUpdatePill = isUpdating || hasVisibleReady || hasVisibleUpdate;
+  const hasDismissedPatch = isDismissed && (isReadyToRestart || isUpdateAvailable);
+
+  const canOneClickApplyAndRestart = Boolean(
+    isUpdateAvailable &&
+      snap?.mode === 'git' &&
+      (snap.updateSource === 'local-commit' || !snap.dirtyWorkingTree)
+  );
 
   useEffect(() => {
     if (!open) return;
     const syncPos = () => {
-      const r = anchorRef.current?.getBoundingClientRect();
+      const r = anchorWrapRef.current?.getBoundingClientRect();
       if (!r) return;
       const right = Math.max(12, Math.round(window.innerWidth - r.right));
       const top = Math.round(r.bottom + 6);
@@ -128,7 +141,7 @@ const TitlebarUpdateControl: React.FC = () => {
     syncPos();
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node | null;
-      if (anchorRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
+      if (anchorWrapRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
       setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -144,7 +157,7 @@ const TitlebarUpdateControl: React.FC = () => {
     };
   }, [open, setOpen]);
 
-  const handleAnchorClick = () => {
+  const handleTogglePopover = () => {
     const next = !open;
     toggleOpen();
     if (next && (!snap || snap.status === 'idle')) {
@@ -152,61 +165,98 @@ const TitlebarUpdateControl: React.FC = () => {
     }
   };
 
+  const handlePillClick = () => {
+    if (isUpdating) {
+      toggleOpen();
+      return;
+    }
+    if (isReadyToRestart) {
+      void invokeRelaunch();
+      return;
+    }
+    if (canOneClickApplyAndRestart) {
+      void invokeApply(true);
+      return;
+    }
+    setOpen(true);
+  };
+
+  const pillLabel = isUpdating
+    ? snap?.applyStage === 'restarting'
+      ? '다시 시작하는 중…'
+      : snap?.applyStage === 'building'
+        ? '빌드 중…'
+        : '업데이트 중…'
+    : isReadyToRestart || canOneClickApplyAndRestart
+      ? '다시 시작하여 업데이트'
+      : '업데이트 확인';
+
+  const pillTitle = isUpdating
+    ? snap?.progressText || '업데이트를 적용하는 중입니다'
+    : isReadyToRestart
+      ? snap?.updateSource === 'local-build'
+        ? '새 로컬 빌드가 준비되었습니다 — 클릭해서 바로 재시작'
+        : '업데이트 빌드 완료 — 클릭해서 바로 재시작'
+      : canOneClickApplyAndRestart
+        ? snap?.updateSource === 'local-commit'
+          ? `로컬 커밋 ${snap.aheadCount}건 빌드 후 바로 재시작`
+          : `새 패치 ${snap?.aheadCount || 1}건 적용 후 바로 재시작`
+        : '업데이트 상세 확인';
+
   return (
     <>
-      <button
-        ref={anchorRef}
-        type="button"
-        onClick={handleAnchorClick}
-        className={
-          isReadyToRestart || isUpdating || hasVisibleUpdate
-            ? 'inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11.5px] font-medium cursor-pointer transition-colors app-no-drag whitespace-nowrap shrink-0'
-            : 'p-1.5 rounded-lg cursor-pointer transition-colors hover:bg-[var(--surface)] app-no-drag shrink-0'
-        }
-        style={
-          isReadyToRestart
-            ? {
-                background: 'color-mix(in srgb, var(--ok) 15%, var(--card))',
-                color: 'var(--ok)',
-                border: '1px solid color-mix(in srgb, var(--ok) 38%, transparent)',
-              }
-            : isUpdating
-              ? {
-                  background: 'color-mix(in srgb, var(--accent) 14%, var(--card))',
-                  color: 'var(--accent)',
-                  border: '1px solid color-mix(in srgb, var(--accent) 32%, transparent)',
-                }
-              : hasVisibleUpdate
-                ? {
-                    background: 'color-mix(in srgb, var(--accent) 14%, var(--card))',
-                    color: 'var(--accent)',
-                    border: '1px solid color-mix(in srgb, var(--accent) 36%, transparent)',
-                  }
-                : { color: open ? 'var(--fg)' : 'var(--muted)' }
-        }
-        title={
-          isReadyToRestart
-            ? '업데이트 완료 — 클릭해서 앱 재시작'
-            : hasVisibleUpdate
-              ? `새 업데이트 ${snap?.aheadCount || 1}건 있음`
-              : '앱 업데이트 확인'
-        }
-      >
-        {isUpdating || isChecking ? (
-          <Loader2 size={14} className="animate-spin shrink-0" />
-        ) : isReadyToRestart ? (
-          <RotateCw size={13} className="shrink-0" />
+      <div ref={anchorWrapRef} className="inline-flex items-center gap-0.5 app-no-drag shrink-0">
+        {showUpdatePill ? (
+          <>
+            <button
+              type="button"
+              onClick={handlePillClick}
+              className="h-[27px] px-3 rounded-full inline-flex items-center gap-1.5 text-[12px] font-semibold cursor-pointer transition-all hover:brightness-95 active:scale-[0.98] whitespace-nowrap shrink-0"
+              style={{
+                background: 'var(--accent)',
+                color: '#ffffff',
+                boxShadow: '0 1px 2px rgba(15, 23, 42, 0.14)',
+              }}
+              title={pillTitle}
+            >
+              {isUpdating && <Loader2 size={12} className="animate-spin shrink-0" />}
+              <span>{pillLabel}</span>
+              {!isUpdating && <ArrowRight size={13} strokeWidth={2.3} className="shrink-0" />}
+            </button>
+            <button
+              type="button"
+              onClick={handleTogglePopover}
+              className="p-1.5 rounded-lg cursor-pointer transition-colors hover:bg-[var(--surface)] shrink-0"
+              style={{ color: open ? 'var(--fg)' : 'var(--muted)' }}
+              title="업데이트 상세 · 변경 내역 보기"
+              aria-label="업데이트 상세 보기"
+            >
+              <MoreVertical size={14} />
+            </button>
+          </>
         ) : (
-          <ArrowUpCircle size={15} className="shrink-0" />
+          <button
+            type="button"
+            onClick={handleTogglePopover}
+            className="relative p-1.5 rounded-lg cursor-pointer transition-colors hover:bg-[var(--surface)] shrink-0"
+            style={{ color: open ? 'var(--fg)' : 'var(--muted)' }}
+            title={hasDismissedPatch ? '대기 중인 업데이트가 있습니다' : '앱 업데이트 확인'}
+            aria-label="앱 업데이트 확인"
+          >
+            {isChecking ? (
+              <Loader2 size={14} className="animate-spin shrink-0" />
+            ) : (
+              <ArrowUpCircle size={15} className="shrink-0" />
+            )}
+            {hasDismissedPatch && (
+              <span
+                className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
+                style={{ background: 'var(--accent)' }}
+              />
+            )}
+          </button>
         )}
-        {isReadyToRestart && <span>재시작 적용</span>}
-        {isUpdating && <span>업데이트 중…</span>}
-        {!isReadyToRestart && !isUpdating && hasVisibleUpdate && (
-          <span>
-            업데이트{snap?.mode === 'git' && snap.aheadCount > 0 ? ` ${snap.aheadCount}` : ''}
-          </span>
-        )}
-      </button>
+      </div>
 
       {open &&
         createPortal(
@@ -254,7 +304,7 @@ const TitlebarUpdateControl: React.FC = () => {
               {isChecking && (
                 <div className="flex items-center gap-2 py-3 text-[12px]" style={{ color: 'var(--muted)' }}>
                   <Loader2 size={14} className="animate-spin" style={{ color: 'var(--accent)' }} />
-                  <span>GitHub 최신 패치를 확인하는 중…</span>
+                  <span>최신 패치를 확인하는 중…</span>
                 </div>
               )}
 
@@ -271,27 +321,62 @@ const TitlebarUpdateControl: React.FC = () => {
                     <span>{snap?.progressText || '업데이트를 적용하는 중…'}</span>
                   </div>
                   <div className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                    완료될 때까지 창을 닫지 마세요. 빌드가 끝나면 바로 재시작 버튼이 뜹니다.
+                    완료될 때까지 창을 닫지 마세요. 빌드가 끝나면 바로 반영됩니다.
                   </div>
                 </div>
               )}
 
               {isReadyToRestart && (
-                <div
-                  className="rounded-xl border p-3 space-y-2"
-                  style={{
-                    background: 'color-mix(in srgb, var(--ok) 10%, var(--bg))',
-                    borderColor: 'color-mix(in srgb, var(--ok) 36%, var(--border))',
-                  }}
-                >
-                  <div className="flex items-center gap-2 font-semibold" style={{ color: 'var(--ok)' }}>
-                    <CheckCircle2 size={14} className="shrink-0" />
-                    <span>최신 패치 빌드가 완료되었습니다!</span>
+                <>
+                  <div
+                    className="rounded-xl border p-3 space-y-1.5"
+                    style={{
+                      background: 'color-mix(in srgb, var(--accent) 8%, var(--bg))',
+                      borderColor: 'color-mix(in srgb, var(--accent) 30%, var(--border))',
+                    }}
+                  >
+                    <div className="flex items-center gap-2 font-semibold" style={{ color: 'var(--accent)' }}>
+                      <CheckCircle2 size={14} className="shrink-0" />
+                      <span>
+                        {snap?.updateSource === 'local-build'
+                          ? '새 로컬 빌드가 준비되었습니다'
+                          : '최신 패치 빌드가 완료되었습니다'}
+                      </span>
+                    </div>
+                    <div className="text-[11.5px] leading-relaxed" style={{ color: 'var(--fg-soft)' }}>
+                      다시 시작하면 새 빌드({snap?.currentSha || `v${snap?.currentVersion}`})가 즉시 적용됩니다.
+                    </div>
                   </div>
-                  <div className="text-[11.5px] leading-relaxed" style={{ color: 'var(--fg-soft)' }}>
-                    지금 재시작하면 새 버전({snap?.currentSha || `v${snap?.currentVersion}`})이 바로 적용됩니다.
-                  </div>
-                </div>
+
+                  {snap && snap.commits.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-[11px] font-semibold" style={{ color: 'var(--muted)' }}>
+                        반영될 패치
+                      </div>
+                      <div
+                        className="max-h-[168px] overflow-y-auto scroll-thin rounded-xl border divide-y"
+                        style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+                      >
+                        {snap.commits.map((c) => (
+                          <div
+                            key={c.sha}
+                            className="px-2.5 py-2 flex items-start gap-2 text-[11.5px]"
+                            style={{ borderColor: 'var(--border)' }}
+                          >
+                            <GitCommitHorizontal size={13} className="shrink-0 mt-0.5" style={{ color: 'var(--accent)' }} />
+                            <div className="min-w-0 flex-1">
+                              <div className="leading-snug break-keep">{c.message}</div>
+                              <div className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--muted)' }}>
+                                {c.sha}
+                                {c.relativeTime ? ` · ${c.relativeTime}` : ''}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
 
               {snap?.status === 'update-available' && (
@@ -305,9 +390,11 @@ const TitlebarUpdateControl: React.FC = () => {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-semibold" style={{ color: 'var(--accent)' }}>
-                        {snap.mode === 'git'
-                          ? `새 패치 ${snap.aheadCount}개가 있습니다`
-                          : `새 버전 ${snap.latestVersion} 출시`}
+                        {snap.updateSource === 'local-commit'
+                          ? `새 로컬 커밋 ${snap.aheadCount}건 (빌드 필요)`
+                          : snap.mode === 'git'
+                            ? `새 패치 ${snap.aheadCount}개가 있습니다`
+                            : `새 버전 ${snap.latestVersion} 출시`}
                       </span>
                       {snap.remoteSha && (
                         <span className="font-mono text-[10.5px]" style={{ color: 'var(--muted)' }}>
@@ -316,9 +403,11 @@ const TitlebarUpdateControl: React.FC = () => {
                       )}
                     </div>
                     <p className="text-[11.5px] leading-snug" style={{ color: 'var(--fg-soft)' }}>
-                      {snap.mode === 'git'
-                        ? '아래 버튼을 누르면 git pull · 빌드까지 한 번에 진행합니다.'
-                        : 'GitHub 릴리즈 페이지에서 최신 설치 파일을 받을 수 있습니다.'}
+                      {snap.updateSource === 'local-commit'
+                        ? '아래 버튼을 누르면 로컬 커밋을 빌드하고 바로 다시 시작합니다.'
+                        : snap.mode === 'git'
+                          ? '아래 버튼을 누르면 git pull · 빌드 후 바로 다시 시작합니다.'
+                          : 'GitHub 릴리즈 페이지에서 최신 설치 파일을 받을 수 있습니다.'}
                     </p>
                   </div>
 
@@ -360,7 +449,7 @@ const TitlebarUpdateControl: React.FC = () => {
                     </pre>
                   )}
 
-                  {snap.mode === 'git' && snap.dirtyWorkingTree && (
+                  {snap.mode === 'git' && snap.updateSource !== 'local-commit' && snap.dirtyWorkingTree && (
                     <div
                       className="rounded-xl border px-2.5 py-2 flex items-start gap-2 text-[11px]"
                       style={{
@@ -430,37 +519,37 @@ const TitlebarUpdateControl: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-1.5">
+                  {(snap?.status === 'update-available' || isReadyToRestart) && (
+                    <button
+                      type="button"
+                      onClick={() => void invokeDismiss()}
+                      className="px-2 py-1.5 rounded-lg text-[11px] cursor-pointer hover:bg-[var(--surface)]"
+                      style={{ color: 'var(--muted)' }}
+                    >
+                      나중에
+                    </button>
+                  )}
                   {snap?.status === 'update-available' && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => void invokeDismiss()}
-                        className="px-2 py-1.5 rounded-lg text-[11px] cursor-pointer hover:bg-[var(--surface)]"
-                        style={{ color: 'var(--muted)' }}
-                      >
-                        나중에
-                      </button>
-                      <button
-                        type="button"
-                        disabled={snap.mode === 'git' && snap.dirtyWorkingTree}
-                        onClick={() => void invokeApply()}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11.5px] font-semibold cursor-pointer hover:opacity-90 disabled:opacity-45 disabled:cursor-not-allowed"
-                        style={{ background: 'var(--accent)', color: '#fff' }}
-                      >
-                        <Download size={12} />
-                        <span>{snap.mode === 'git' ? '지금 업데이트' : '다운로드'}</span>
-                      </button>
-                    </>
+                    <button
+                      type="button"
+                      disabled={snap.mode === 'git' && snap.updateSource !== 'local-commit' && snap.dirtyWorkingTree}
+                      onClick={() => void invokeApply(snap.mode === 'git')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-semibold cursor-pointer hover:brightness-95 disabled:opacity-45 disabled:cursor-not-allowed"
+                      style={{ background: 'var(--accent)', color: '#fff' }}
+                    >
+                      <span>{snap.mode === 'git' ? '다시 시작하여 업데이트' : '다운로드'}</span>
+                      <ArrowRight size={12} strokeWidth={2.3} />
+                    </button>
                   )}
                   {isReadyToRestart && (
                     <button
                       type="button"
                       onClick={() => void invokeRelaunch()}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11.5px] font-semibold cursor-pointer hover:opacity-90"
-                      style={{ background: 'var(--ok)', color: '#fff' }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-semibold cursor-pointer hover:brightness-95"
+                      style={{ background: 'var(--accent)', color: '#fff' }}
                     >
-                      <RotateCw size={12} />
-                      <span>앱 재시작</span>
+                      <span>다시 시작하여 업데이트</span>
+                      <ArrowRight size={12} strokeWidth={2.3} />
                     </button>
                   )}
                 </div>
@@ -490,19 +579,23 @@ export const appUpdaterClient: ClientPluginModule<AppUpdaterConfig> = {
       if (!snap) return;
       useAppUpdaterStore.getState().setSnapshot(snap);
 
-      // Show a single unobtrusive toast when a new update is discovered
-      const remoteKey = snap.mode === 'git' ? snap.remoteSha : snap.latestVersion;
+      // Show a single unobtrusive toast when a new patch or local build is discovered
+      const notifyKey = snap.updateKey ?? (snap.mode === 'git' ? snap.remoteSha : snap.latestVersion);
       if (
-        snap.status === 'update-available' &&
-        remoteKey &&
-        remoteKey !== prevNotifiedKey &&
-        remoteKey !== snap.dismissedRemoteKey
+        (snap.status === 'update-available' || snap.status === 'ready-to-restart') &&
+        notifyKey &&
+        notifyKey !== prevNotifiedKey &&
+        notifyKey !== snap.dismissedRemoteKey
       ) {
-        prevNotifiedKey = remoteKey;
+        prevNotifiedKey = notifyKey;
         const msg =
-          snap.mode === 'git'
-            ? `새 패치 ${snap.aheadCount}개가 있습니다. 상단 업데이트 버튼에서 바로 적용할 수 있습니다.`
-            : `새 버전 ${snap.latestVersion}이 출시되었습니다.`;
+          snap.status === 'ready-to-restart'
+            ? '새 빌드가 준비되었습니다. 상단 "다시 시작하여 업데이트"를 누르면 바로 적용됩니다.'
+            : snap.updateSource === 'local-commit'
+              ? `새 로컬 커밋 ${snap.aheadCount}건이 있습니다. 상단 버튼으로 빌드 후 바로 재시작할 수 있습니다.`
+              : snap.mode === 'git'
+                ? `새 패치 ${snap.aheadCount}개가 있습니다. 상단 "다시 시작하여 업데이트"로 바로 적용할 수 있습니다.`
+                : `새 버전 ${snap.latestVersion}이 출시되었습니다.`;
         useIntrospectionStore.getState().pushToast(msg, 'info');
       }
     });

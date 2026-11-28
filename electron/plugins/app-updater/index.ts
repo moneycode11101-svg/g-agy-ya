@@ -1,9 +1,10 @@
 import { app, shell } from 'electron';
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { BuiltinPluginPackage, HostPluginModule } from '../../../src/kernel/shared/types';
+import type { BuiltinPluginPackage, Disposer, HostPluginModule } from '../../../src/kernel/shared/types';
 import { appUpdaterManifest } from '../../../src/plugins/app-updater/manifest';
 import {
   APP_UPDATER_BUS,
@@ -41,6 +42,55 @@ function readPackageVersion(repoRoot: string): string {
     // ignore
   }
   return app.getVersion() || '0.1.0';
+}
+
+/**
+ * Computes a fast content fingerprint of the compiled Electron main bundle
+ * and Vite renderer index (which embeds hashed JS/CSS asset filenames).
+ * Returns null if build outputs do not exist yet.
+ */
+function computeBuildFingerprint(repoRoot: string): string | null {
+  try {
+    const mainCjsPath = path.join(repoRoot, 'dist-electron', 'main.cjs');
+    const preloadCjsPath = path.join(repoRoot, 'dist-electron', 'preload.cjs');
+    const webIndexPath = path.join(repoRoot, 'dist', 'index.html');
+    const hasMain = fs.existsSync(mainCjsPath);
+    const hasWeb = fs.existsSync(webIndexPath);
+    if (!hasMain && !hasWeb) return null;
+
+    const hash = crypto.createHash('sha1');
+    if (hasMain) {
+      hash.update('main:');
+      hash.update(fs.readFileSync(mainCjsPath));
+    }
+    if (fs.existsSync(preloadCjsPath)) {
+      hash.update('preload:');
+      hash.update(fs.readFileSync(preloadCjsPath));
+    }
+    if (hasWeb) {
+      hash.update('web:');
+      hash.update(fs.readFileSync(webIndexPath, 'utf8'));
+    }
+    return hash.digest('hex').slice(0, 16);
+  } catch {
+    return null;
+  }
+}
+
+function parseGitLogLines(stdout: string): UpdateCommitItem[] {
+  if (!stdout.trim()) return [];
+  return stdout
+    .trim()
+    .split('\n')
+    .map((line) => {
+      const [sha, message, relativeTime] = line.split('\x1f');
+      return {
+        sha: (sha || '').trim(),
+        message: (message || '').trim(),
+        relativeTime: (relativeTime || '').trim(),
+      };
+    })
+    .filter((c) => Boolean(c.sha));
 }
 
 function buildToolEnv(): NodeJS.ProcessEnv {
@@ -161,10 +211,14 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
     const repoRoot = resolveRepoRoot();
     const isGitRepo = fs.existsSync(path.join(repoRoot, '.git'));
     const initialCfg = sanitizeConfig(ctx.config.get());
+    const bootBuildFingerprint = computeBuildFingerprint(repoRoot);
+    let bootFullSha: string | null = null;
 
     let state: AppUpdaterStateSnapshot = {
       mode: isGitRepo ? 'git' : 'release',
       status: 'idle',
+      updateSource: null,
+      updateKey: null,
       currentVersion: readPackageVersion(repoRoot),
       currentBranch: null,
       currentSha: null,
@@ -185,9 +239,13 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
 
     let disposed = false;
     let inFlightCheck: Promise<AppUpdaterStateSnapshot> | null = null;
+    let inFlightLocalCheck: Promise<boolean> | null = null;
     let applying = false;
     let startTimer: ReturnType<typeof setTimeout> | null = null;
     let intervalTimer: ReturnType<typeof setInterval> | null = null;
+    let watchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const watchers: fs.FSWatcher[] = [];
+    let offWindowFocus: Disposer | null = null;
 
     const emitState = (patch: Partial<AppUpdaterStateSnapshot>) => {
       state = { ...state, ...patch };
@@ -197,6 +255,180 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
     };
 
     const getCfg = () => sanitizeConfig(ctx.config.get());
+
+    const relaunchApp = () => {
+      setTimeout(() => {
+        app.relaunch();
+        app.quit();
+        setTimeout(() => app.exit(0), 2500);
+      }, 80);
+    };
+
+    const captureBootHead = async (): Promise<void> => {
+      if (!isGitRepo || bootFullSha) return;
+      const [headRes, branchRes] = await Promise.all([
+        runCmd('git', ['rev-parse', 'HEAD'], repoRoot, 5_000),
+        runCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot, 5_000),
+      ]);
+      if (headRes.ok && headRes.stdout.trim()) {
+        bootFullSha = headRes.stdout.trim();
+        if (!state.currentSha) {
+          emitState({
+            currentSha: bootFullSha.slice(0, 7),
+            currentBranch: branchRes.ok ? branchRes.stdout.trim() : state.currentBranch,
+          });
+        }
+      }
+    };
+
+    /**
+     * Detects local compiled bundle updates (`dist-electron/main.cjs` or `dist/index.html`)
+     * or new local git commits created while the app is running.
+     * Returns true if a local patch/restart state is active.
+     */
+    const checkLocalPatchState = async (): Promise<boolean> => {
+      if (disposed || applying) return false;
+      if (inFlightLocalCheck) return inFlightLocalCheck;
+
+      inFlightLocalCheck = (async () => {
+        try {
+          if (isGitRepo && !bootFullSha) {
+            await captureBootHead();
+          }
+
+          const nowFingerprint = computeBuildFingerprint(repoRoot);
+          const currentVersion = readPackageVersion(repoRoot);
+
+          let headFullSha = '';
+          let currentBranch = state.currentBranch;
+          let dirtyWorkingTree = state.dirtyWorkingTree;
+
+          if (isGitRepo) {
+            const [headRes, branchRes, dirtyRes] = await Promise.all([
+              runCmd('git', ['rev-parse', 'HEAD'], repoRoot, 4_000),
+              runCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot, 4_000),
+              runCmd('git', ['status', '--porcelain', '--untracked-files=no'], repoRoot, 4_000),
+            ]);
+            if (headRes.ok) headFullSha = headRes.stdout.trim();
+            if (branchRes.ok) currentBranch = branchRes.stdout.trim();
+            if (dirtyRes.ok) dirtyWorkingTree = dirtyRes.stdout.trim().length > 0;
+          }
+
+          const headShortSha = headFullSha ? headFullSha.slice(0, 7) : state.currentSha;
+
+          // Case 1: Compiled build on disk changed after launch -> ready to restart immediately!
+          if (bootBuildFingerprint && nowFingerprint && nowFingerprint !== bootBuildFingerprint) {
+            let commits: UpdateCommitItem[] = [];
+            if (isGitRepo) {
+              const logArgs =
+                bootFullSha && headFullSha && headFullSha !== bootFullSha
+                  ? ['log', `${bootFullSha}..HEAD`, '--pretty=format:%h%x1f%s%x1f%cr', '--max-count=10']
+                  : ['log', '-1', '--pretty=format:%h%x1f%s%x1f%cr'];
+              const logRes = await runCmd('git', logArgs, repoRoot, 4_000);
+              if (logRes.ok) commits = parseGitLogLines(logRes.stdout);
+            }
+            const nextKey = `local-build:${nowFingerprint}`;
+            emitState({
+              status: 'ready-to-restart',
+              updateSource: 'local-build',
+              updateKey: nextKey,
+              currentVersion,
+              currentBranch,
+              currentSha: headShortSha,
+              remoteSha: headShortSha,
+              aheadCount: commits.length || 1,
+              commits,
+              dirtyWorkingTree,
+              applyStage: 'done',
+              progressText: '새 빌드가 준비되었습니다. 다시 시작하면 바로 적용됩니다.',
+              error: null,
+              lastCheckedAt: new Date().toISOString(),
+            });
+            return true;
+          }
+
+          // Case 2: New local git commit(s) created after launch, not yet built
+          if (isGitRepo && bootFullSha && headFullSha && headFullSha !== bootFullSha) {
+            const logRes = await runCmd(
+              'git',
+              ['log', `${bootFullSha}..HEAD`, '--pretty=format:%h%x1f%s%x1f%cr', '--max-count=10'],
+              repoRoot,
+              4_000
+            );
+            const commits = logRes.ok ? parseGitLogLines(logRes.stdout) : [];
+            const nextKey = `local-commit:${headFullSha}`;
+            emitState({
+              mode: 'git',
+              status: 'update-available',
+              updateSource: 'local-commit',
+              updateKey: nextKey,
+              currentVersion,
+              currentBranch,
+              currentSha: bootFullSha.slice(0, 7),
+              remoteSha: headShortSha,
+              aheadCount: commits.length || 1,
+              commits,
+              dirtyWorkingTree,
+              applyStage: null,
+              progressText: null,
+              error: null,
+              lastCheckedAt: new Date().toISOString(),
+            });
+            return true;
+          }
+
+          return false;
+        } catch {
+          return false;
+        } finally {
+          inFlightLocalCheck = null;
+        }
+      })();
+
+      return inFlightLocalCheck;
+    };
+
+    const scheduleLocalCheck = (delayMs = 900) => {
+      if (disposed || applying) return;
+      if (watchDebounceTimer) clearTimeout(watchDebounceTimer);
+      watchDebounceTimer = setTimeout(() => {
+        watchDebounceTimer = null;
+        void checkLocalPatchState();
+      }, delayMs);
+    };
+
+    const setupLocalWatchers = () => {
+      const watchTargets = [
+        path.join(repoRoot, 'dist-electron'),
+        path.join(repoRoot, 'dist'),
+        ...(isGitRepo ? [path.join(repoRoot, '.git', 'logs')] : []),
+      ];
+      for (const dir of watchTargets) {
+        try {
+          if (!fs.existsSync(dir)) continue;
+          const w = fs.watch(dir, { persistent: false }, (_ev, filename) => {
+            const name = typeof filename === 'string' ? filename : '';
+            if (
+              !name ||
+              name === 'main.cjs' ||
+              name === 'preload.cjs' ||
+              name === 'index.html' ||
+              name === 'HEAD' ||
+              name.endsWith('.js') ||
+              name.endsWith('.css')
+            ) {
+              scheduleLocalCheck(900);
+            }
+          });
+          w.on('error', () => {
+            // ignore transient fs watcher errors
+          });
+          watchers.push(w);
+        } catch {
+          // ignore platforms/paths where fs.watch isn't supported
+        }
+      }
+    };
 
     const checkViaGitHubCompare = async (
       repoSlug: string,
@@ -247,6 +479,13 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
       if (inFlightCheck) return inFlightCheck;
 
       inFlightCheck = (async () => {
+        // First check whether a newer local build is already waiting for restart
+        const hasLocal = await checkLocalPatchState();
+        if (hasLocal && state.status === 'ready-to-restart') {
+          return state;
+        }
+        const hadLocalCommit = hasLocal && state.updateSource === 'local-commit';
+
         const cfg = getCfg();
         const repoUrl = `https://github.com/${cfg.repoSlug}`;
         const currentVersion = readPackageVersion(repoRoot);
@@ -269,6 +508,7 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
             ]);
 
             const localFullSha = headRes.ok ? headRes.stdout.trim() : '';
+            if (localFullSha && !bootFullSha) bootFullSha = localFullSha;
             const currentSha = localFullSha ? localFullSha.slice(0, 7) : null;
             const currentBranch = branchRes.ok ? branchRes.stdout.trim() : null;
             const dirtyWorkingTree = dirtyRes.ok ? dirtyRes.stdout.trim().length > 0 : false;
@@ -289,24 +529,18 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
 
               const aheadCount = countRes.ok ? Number.parseInt(countRes.stdout.trim(), 10) || 0 : 0;
               const remoteSha = remoteShaRes.ok ? remoteShaRes.stdout.trim() : null;
-              const commits: UpdateCommitItem[] = logRes.ok && logRes.stdout.trim()
-                ? logRes.stdout
-                    .trim()
-                    .split('\n')
-                    .map((line) => {
-                      const [sha, message, relativeTime] = line.split('\x1f');
-                      return {
-                        sha: (sha || '').trim(),
-                        message: (message || '').trim(),
-                        relativeTime: (relativeTime || '').trim(),
-                      };
-                    })
-                    .filter((c) => Boolean(c.sha))
-                : [];
+              const commits = logRes.ok ? parseGitLogLines(logRes.stdout) : [];
+
+              if (aheadCount === 0 && hadLocalCommit) {
+                await checkLocalPatchState();
+                return state;
+              }
 
               emitState({
                 mode: 'git',
                 status: aheadCount > 0 ? 'update-available' : 'up-to-date',
+                updateSource: aheadCount > 0 ? 'remote' : null,
+                updateKey: aheadCount > 0 ? `remote:${remoteSha || aheadCount}` : null,
                 currentVersion,
                 currentBranch,
                 currentSha,
@@ -325,9 +559,15 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
             if (localFullSha) {
               const cmp = await checkViaGitHubCompare(cfg.repoSlug, localFullSha, cfg.branch);
               if (cmp) {
+                if (cmp.aheadCount === 0 && hadLocalCommit) {
+                  await checkLocalPatchState();
+                  return state;
+                }
                 emitState({
                   mode: 'git',
                   status: cmp.aheadCount > 0 ? 'update-available' : 'up-to-date',
+                  updateSource: cmp.aheadCount > 0 ? 'remote' : null,
+                  updateKey: cmp.aheadCount > 0 ? `remote:${cmp.remoteSha || cmp.aheadCount}` : null,
                   currentVersion,
                   currentBranch,
                   currentSha,
@@ -341,6 +581,11 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
                 });
                 return state;
               }
+            }
+
+            if (hadLocalCommit) {
+              await checkLocalPatchState();
+              return state;
             }
 
             emitState({
@@ -368,6 +613,8 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
             emitState({
               mode: 'release',
               status: 'up-to-date',
+              updateSource: null,
+              updateKey: null,
               currentVersion,
               latestVersion: currentVersion,
               aheadCount: 0,
@@ -391,6 +638,8 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
           emitState({
             mode: 'release',
             status: isNewer ? 'update-available' : 'up-to-date',
+            updateSource: isNewer ? 'remote' : null,
+            updateKey: isNewer ? `release:${latestVersion}` : null,
             currentVersion,
             latestVersion,
             aheadCount: isNewer ? 1 : 0,
@@ -417,14 +666,19 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
       return inFlightCheck;
     };
 
-    const applyGitUpdate = async (): Promise<{ ok: boolean; error?: string }> => {
+    const applyGitUpdate = async (opts?: { autoRelaunch?: boolean }): Promise<{ ok: boolean; error?: string }> => {
       if (applying) return { ok: false, error: '이미 업데이트가 진행 중입니다.' };
+      if (state.status === 'ready-to-restart') {
+        relaunchApp();
+        return { ok: true };
+      }
       if (!isGitRepo) {
         await shell.openExternal(state.releaseUrl);
         return { ok: true };
       }
 
       const cfg = getCfg();
+      const isLocalCommitOnly = state.updateSource === 'local-commit';
       applying = true;
       const setStage = (applyStage: UpdateApplyStage, progressText: string) => {
         emitState({
@@ -436,43 +690,47 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
       };
 
       try {
-        // Safety guard 1: never clobber dirty tracked edits
-        const dirtyRes = await runCmd('git', ['status', '--porcelain', '--untracked-files=no'], repoRoot, 5_000);
-        if (dirtyRes.ok && dirtyRes.stdout.trim().length > 0) {
-          const msg =
-            '로컬에 커밋되지 않은 수정사항이 있어 자동 업데이트를 중단했습니다. 변경사항을 정리한 뒤 다시 시도하세요.';
-          emitState({ status: 'error', dirtyWorkingTree: true, applyStage: null, progressText: null, error: msg });
-          return { ok: false, error: msg };
-        }
+        let diffBaseSha = bootFullSha || '';
 
-        // Safety guard 2: only fast-forward when on the tracked branch
-        const branchRes = await runCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot, 5_000);
-        const curBranch = branchRes.ok ? branchRes.stdout.trim() : '';
-        if (curBranch !== cfg.branch) {
-          const msg = `현재 "${curBranch || 'detached'}" 브랜치에 있습니다. "${cfg.branch}" 브랜치로 전환한 뒤 업데이트해 주세요.`;
-          emitState({ status: 'error', currentBranch: curBranch || null, applyStage: null, progressText: null, error: msg });
-          return { ok: false, error: msg };
-        }
+        if (!isLocalCommitOnly) {
+          // Safety guard 1: never clobber dirty tracked edits when pulling remote
+          const dirtyRes = await runCmd('git', ['status', '--porcelain', '--untracked-files=no'], repoRoot, 5_000);
+          if (dirtyRes.ok && dirtyRes.stdout.trim().length > 0) {
+            const msg =
+              '로컬에 커밋되지 않은 수정사항이 있어 자동 업데이트를 중단했습니다. 변경사항을 정리한 뒤 다시 시도하세요.';
+            emitState({ status: 'error', dirtyWorkingTree: true, applyStage: null, progressText: null, error: msg });
+            return { ok: false, error: msg };
+          }
 
-        const prevHeadRes = await runCmd('git', ['rev-parse', 'HEAD'], repoRoot, 5_000);
-        const prevHead = prevHeadRes.ok ? prevHeadRes.stdout.trim() : '';
+          // Safety guard 2: only fast-forward when on the tracked branch
+          const branchRes = await runCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot, 5_000);
+          const curBranch = branchRes.ok ? branchRes.stdout.trim() : '';
+          if (curBranch !== cfg.branch) {
+            const msg = `현재 "${curBranch || 'detached'}" 브랜치에 있습니다. "${cfg.branch}" 브랜치로 전환한 뒤 업데이트해 주세요.`;
+            emitState({ status: 'error', currentBranch: curBranch || null, applyStage: null, progressText: null, error: msg });
+            return { ok: false, error: msg };
+          }
 
-        setStage('fetching', '최신 패치를 가져오는 중 (git fetch)…');
-        const fetchRes = await runCmd('git', ['fetch', 'origin', cfg.branch, '--quiet'], repoRoot, 20_000);
-        if (!fetchRes.ok) {
-          throw new Error(fetchRes.error || 'git fetch 실패');
-        }
+          const prevHeadRes = await runCmd('git', ['rev-parse', 'HEAD'], repoRoot, 5_000);
+          diffBaseSha = prevHeadRes.ok ? prevHeadRes.stdout.trim() : '';
 
-        setStage('pulling', '새 패치를 적용하는 중 (git pull --ff-only)…');
-        const pullRes = await runCmd('git', ['pull', '--ff-only', 'origin', cfg.branch], repoRoot, 30_000);
-        if (!pullRes.ok) {
-          throw new Error(pullRes.error || 'git pull --ff-only 실패 (로컬 커밋이 분기되었을 수 있습니다)');
+          setStage('fetching', '최신 패치를 가져오는 중 (git fetch)…');
+          const fetchRes = await runCmd('git', ['fetch', 'origin', cfg.branch, '--quiet'], repoRoot, 20_000);
+          if (!fetchRes.ok) {
+            throw new Error(fetchRes.error || 'git fetch 실패');
+          }
+
+          setStage('pulling', '새 패치를 적용하는 중 (git pull --ff-only)…');
+          const pullRes = await runCmd('git', ['pull', '--ff-only', 'origin', cfg.branch], repoRoot, 30_000);
+          if (!pullRes.ok) {
+            throw new Error(pullRes.error || 'git pull --ff-only 실패 (로컬 커밋이 분기되었을 수 있습니다)');
+          }
         }
 
         // Only run `npm install` when package.json or package-lock.json changed
         let needsNpmInstall = false;
-        if (prevHead) {
-          const diffRes = await runCmd('git', ['diff', '--name-only', `${prevHead}..HEAD`], repoRoot, 5_000);
+        if (diffBaseSha) {
+          const diffRes = await runCmd('git', ['diff', '--name-only', `${diffBaseSha}..HEAD`], repoRoot, 5_000);
           if (diffRes.ok) {
             const changed = diffRes.stdout.split('\n').map((s) => s.trim());
             needsNpmInstall = changed.includes('package.json') || changed.includes('package-lock.json');
@@ -496,15 +754,36 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
 
         const newShaRes = await runCmd('git', ['rev-parse', '--short', 'HEAD'], repoRoot, 5_000);
         const newSha = newShaRes.ok ? newShaRes.stdout.trim() : state.remoteSha;
+        const freshFp = computeBuildFingerprint(repoRoot);
+
+        if (opts?.autoRelaunch) {
+          emitState({
+            status: 'updating',
+            updateSource: isLocalCommitOnly ? 'local-build' : 'remote',
+            updateKey: freshFp ? `local-build:${freshFp}` : state.updateKey,
+            currentVersion: readPackageVersion(repoRoot),
+            currentSha: newSha,
+            remoteSha: newSha,
+            aheadCount: 0,
+            applyStage: 'restarting',
+            progressText: '빌드 완료 — 제제이야를 다시 시작하는 중…',
+            error: null,
+            lastCheckedAt: new Date().toISOString(),
+          });
+          relaunchApp();
+          return { ok: true };
+        }
 
         emitState({
           status: 'ready-to-restart',
+          updateSource: isLocalCommitOnly ? 'local-build' : 'remote',
+          updateKey: freshFp ? `local-build:${freshFp}` : state.updateKey,
           currentVersion: readPackageVersion(repoRoot),
           currentSha: newSha,
           remoteSha: newSha,
           aheadCount: 0,
           applyStage: 'done',
-          progressText: '업데이트가 완료되었습니다. 앱을 재시작하면 바로 적용됩니다.',
+          progressText: '업데이트가 완료되었습니다. 다시 시작하면 바로 적용됩니다.',
           error: null,
           lastCheckedAt: new Date().toISOString(),
         });
@@ -542,16 +821,21 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
       APP_UPDATER_RPC.CHECK,
       async (payload) => await checkForUpdates(payload?.manual !== false)
     );
-    ctx.rpc.handle<void, { ok: boolean; error?: string }>(APP_UPDATER_RPC.APPLY, async () => await applyGitUpdate());
+    ctx.rpc.handle<{ autoRelaunch?: boolean } | undefined, { ok: boolean; error?: string }>(
+      APP_UPDATER_RPC.APPLY,
+      async (payload) => await applyGitUpdate({ autoRelaunch: Boolean(payload?.autoRelaunch) })
+    );
     ctx.rpc.handle<void, { ok: boolean }>(APP_UPDATER_RPC.RELAUNCH, () => {
-      app.relaunch();
-      app.exit(0);
+      relaunchApp();
       return { ok: true };
     });
     ctx.rpc.handle<{ remoteKey?: string | null } | undefined, AppUpdaterStateSnapshot>(
       APP_UPDATER_RPC.DISMISS,
       (payload) => {
-        const key = payload?.remoteKey ?? (state.mode === 'git' ? state.remoteSha : state.latestVersion);
+        const key =
+          payload?.remoteKey ??
+          state.updateKey ??
+          (state.mode === 'git' ? state.remoteSha : state.latestVersion);
         emitState({ dismissedRemoteKey: key || null });
         return state;
       }
@@ -566,7 +850,21 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
       schedulePeriodicChecks();
     });
 
+    void captureBootHead();
+    setupLocalWatchers();
     schedulePeriodicChecks();
+
+    // Check local build/commit immediately on window focus, and remote if stale (>10m)
+    offWindowFocus = ctx.host.onWindowFocus(() => {
+      if (disposed || applying) return;
+      void checkLocalPatchState().then((hasLocal) => {
+        if (hasLocal || !getCfg().autoCheckOnStart) return;
+        const lastMs = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : 0;
+        if (!lastMs || Date.now() - lastMs > 10 * 60_000) {
+          void checkForUpdates(false);
+        }
+      });
+    });
 
     // Non-blocking check 4 seconds after launch so startup latency is untouched
     if (getCfg().autoCheckOnStart) {
@@ -579,6 +877,16 @@ export const appUpdaterHost: HostPluginModule<AppUpdaterConfig> = {
       disposed = true;
       if (startTimer) clearTimeout(startTimer);
       if (intervalTimer) clearInterval(intervalTimer);
+      if (watchDebounceTimer) clearTimeout(watchDebounceTimer);
+      if (offWindowFocus) void offWindowFocus();
+      for (const w of watchers) {
+        try {
+          w.close();
+        } catch {
+          // ignore
+        }
+      }
+      watchers.length = 0;
     }, 'app-updater:cleanup');
   },
 };

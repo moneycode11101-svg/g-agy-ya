@@ -1,5 +1,7 @@
 export type UpdaterMode = 'git' | 'release';
 
+export type UpdateSource = 'remote' | 'local-build' | 'local-commit' | null;
+
 export type UpdaterStatus =
   | 'idle'
   | 'checking'
@@ -9,7 +11,7 @@ export type UpdaterStatus =
   | 'ready-to-restart'
   | 'error';
 
-export type UpdateApplyStage = 'fetching' | 'pulling' | 'installing' | 'building' | 'done';
+export type UpdateApplyStage = 'fetching' | 'pulling' | 'installing' | 'building' | 'restarting' | 'done';
 
 export interface UpdateCommitItem {
   readonly sha: string;
@@ -20,6 +22,8 @@ export interface UpdateCommitItem {
 export interface AppUpdaterStateSnapshot {
   readonly mode: UpdaterMode;
   readonly status: UpdaterStatus;
+  readonly updateSource: UpdateSource;
+  readonly updateKey: string | null;
   readonly currentVersion: string;
   readonly currentBranch: string | null;
   readonly currentSha: string | null;
