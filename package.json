@@ -1,7 +1,7 @@
 {
   "name": "g-agy-ya",
   "productName": "제제이야",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "license": "MIT",
   "description": "제제이야 (g-agy-ya) — Zero-telemetry Electron infinite-split multi-agent desktop workspace for Antigravity (agy), Claude Code, and OpenAI Codex CLI with embedded webviews, PTY terminal, live token HUD, and hot-reloadable Plugin Studio.",
